@@ -64,8 +64,14 @@ function App() {
     }
   };
 
-  return <Layout>{renderScreen()}</Layout>;
+  return (
+    <Layout>
+      {/* key forces re-mount for CSS animation on screen change */}
+      <React.Fragment key={currentScreen}>
+        {renderScreen()}
+      </React.Fragment>
+    </Layout>
+  );
 }
 
 export default App;
-

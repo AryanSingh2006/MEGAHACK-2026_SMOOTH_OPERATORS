@@ -5,11 +5,11 @@ import "../styles/layout.css";
 
 function ScreenThree({ analysisResult, onStartOver }) {
   return (
-    <>
+    <div className="screen-wrapper">
       <div className="popup-header">
         <h1 className="popup-title">Analysis Result</h1>
         <p className="popup-subtitle">
-          Here is how the image scores as AI vs. real.
+          Here's how the image scores as AI-generated vs. real.
         </p>
       </div>
       <div className="popup-body">
@@ -20,9 +20,8 @@ function ScreenThree({ analysisResult, onStartOver }) {
           Start Over
         </Button>
       </div>
-    </>
+    </div>
   );
 }
 
 export default ScreenThree;
-

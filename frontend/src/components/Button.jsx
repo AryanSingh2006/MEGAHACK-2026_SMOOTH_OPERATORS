@@ -1,14 +1,21 @@
 import React from "react";
 import "../styles/components.css";
 
-function Button({ children, variant = "primary", ...rest }) {
-  const className = ["btn", `btn-${variant}`].join(" ");
+function Button({ children, variant = "primary", icon, fullWidth, ...rest }) {
+  const classNames = [
+    "btn",
+    `btn-${variant}`,
+    fullWidth ? "btn-full" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <button className={className} type="button" {...rest}>
+    <button className={classNames} type="button" {...rest}>
+      {icon && <span className="btn-icon">{icon}</span>}
       {children}
     </button>
   );
 }
 
 export default Button;
-
