@@ -65,6 +65,7 @@ function App() {
         // Navigate to Screen Two with the image
         setImageUrl(url);
         setImageSrc(url);
+        setImageSourceType("url");
         setCurrentScreen(2);
       }
     });
