@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Deepfake detector extension",
+  "version": "1.0",
+  "description": "check for the Deepfake",
+  "action": {
+    "default_popup": "index.html" 
+  }
+
+}
