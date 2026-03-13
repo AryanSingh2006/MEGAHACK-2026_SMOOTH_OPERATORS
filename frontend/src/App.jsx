@@ -1,35 +1,71 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import React, { useState } from "react";
+import Layout from "./components/Layout.jsx";
+import ScreenOne from "./pages/ScreenOne.jsx";
+import ScreenTwo from "./pages/ScreenTwo.jsx";
+import ScreenThree from "./pages/ScreenThree.jsx";
+
+const initialAnalysis = {
+  aiPercent: null,
+  realPercent: null,
+  description: "",
+};
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [currentScreen, setCurrentScreen] = useState(1);
+  const [imageSrc, setImageSrc] = useState(null);
+  const [analysisResult, setAnalysisResult] = useState(initialAnalysis);
 
-  return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.jsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
-  )
+  const goToScreen = (screenNumber) => {
+    setCurrentScreen(screenNumber);
+  };
+
+  const handleSelectImage = (sourceLabel) => {
+    // For now, just mock an image URL based on the source type
+    setImageSrc(`mock-image-from-${sourceLabel.toLowerCase().replace(" ", "-")}`);
+    setCurrentScreen(2);
+  };
+
+  const handleReset = () => {
+    setImageSrc(null);
+    setAnalysisResult(initialAnalysis);
+    setCurrentScreen(1);
+  };
+
+  const renderScreen = () => {
+    switch (currentScreen) {
+      case 1:
+        return (
+          <ScreenOne
+            onUploadImage={() => handleSelectImage("Upload Image")}
+            onSnipScreen={() => handleSelectImage("Snip Screen")}
+            onClickImage={() => handleSelectImage("Click Image")}
+          />
+        );
+      case 2:
+        return (
+          <ScreenTwo
+            imageSrc={imageSrc}
+            onBack={() => setCurrentScreen(1)}
+            onAnalyze={(result) => {
+              setAnalysisResult(result);
+              setCurrentScreen(3);
+            }}
+          />
+        );
+      case 3:
+        return (
+          <ScreenThree
+            analysisResult={analysisResult}
+            onStartOver={handleReset}
+          />
+        );
+      default:
+        return null;
+    }
+  };
+
+  return <Layout>{renderScreen()}</Layout>;
 }
 
-export default App
+export default App;
+
