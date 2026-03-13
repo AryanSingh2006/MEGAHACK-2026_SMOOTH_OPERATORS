@@ -11,16 +11,25 @@ function ResultCard({ result }) {
   const [animated, setAnimated] = useState(false);
 
   useEffect(() => {
-    // Trigger bar animation after mount
-    const timer = setTimeout(() => setAnimated(true), 50);
+    const timer = setTimeout(() => setAnimated(true), 80);
     return () => clearTimeout(timer);
   }, []);
 
   const isAI = aiPercent != null && realPercent != null && aiPercent > realPercent;
-  const verdict = isAI ? "Likely AI Generated" : "Likely Real";
+  const mainPercent = isAI ? aiPercent : realPercent;
 
   return (
     <div className="result-card">
+      {/* Big probability display */}
+      {mainPercent != null && (
+        <div className="probability-display">
+          <div className="probability-label">Probability Meter</div>
+          <div className={`probability-value ${isAI ? "prob-ai" : "prob-real"}`}>
+            {mainPercent.toFixed(0)}%
+          </div>
+        </div>
+      )}
+
       {/* Verdict badge */}
       {aiPercent != null && (
         <div className={`verdict-badge ${isAI ? "verdict-ai" : "verdict-real"}`}>
@@ -36,11 +45,11 @@ function ResultCard({ result }) {
               <polyline points="22 4 12 14.01 9 11.01" />
             </svg>
           )}
-          {verdict}
+          {isAI ? "AI Generated" : "Likely Real"}
         </div>
       )}
 
-      {/* AI percentage row */}
+      {/* AI bar */}
       <div className="result-row">
         <div className="result-row-header">
           <span className="result-label">AI Generated</span>
@@ -54,7 +63,7 @@ function ResultCard({ result }) {
         </div>
       </div>
 
-      {/* Real percentage row */}
+      {/* Real bar */}
       <div className="result-row">
         <div className="result-row-header">
           <span className="result-label">Real</span>

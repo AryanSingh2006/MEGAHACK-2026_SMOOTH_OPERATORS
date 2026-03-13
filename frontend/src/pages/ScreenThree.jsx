@@ -7,10 +7,12 @@ function ScreenThree({ analysisResult, onStartOver }) {
   return (
     <div className="screen-wrapper">
       <div className="popup-header">
-        <h1 className="popup-title">Analysis Result</h1>
-        <p className="popup-subtitle">
-          Here's how the image scores as AI-generated vs. real.
-        </p>
+        <div className="popup-header-text">
+          <h1 className="popup-title">Analysis Result</h1>
+          <p className="popup-subtitle">
+            AI detection probability analysis complete.
+          </p>
+        </div>
       </div>
       <div className="popup-body">
         <ResultCard result={analysisResult} />
