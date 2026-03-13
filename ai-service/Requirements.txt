@@ -1,0 +1,39 @@
+# ============================================================
+# Python 3.9 compatible — all versions tested together
+# ============================================================
+
+# --- Core API ---
+# fastapi 0.100+ requires pydantic v2; we pin below 0.100 to stay on v1
+fastapi==0.95.2
+uvicorn[standard]==0.23.2
+python-multipart==0.0.9
+starlette==0.27.0
+
+# --- Pydantic (MUST be v1 on Python 3.9) ---
+# Pydantic v2's JSON schema generator uses typing internals
+# that don't exist in Python 3.9 — causes the _SpecialForm error
+pydantic==1.10.13
+
+# --- ML models ---
+transformers==4.40.2
+torch==2.2.2
+torchvision==0.17.2
+tokenizers>=0.19.0
+huggingface-hub>=0.23.0
+safetensors>=0.4.3
+accelerate>=0.30.0
+
+# --- Image processing ---
+Pillow==10.3.0
+numpy==1.26.4
+
+# --- HTTP client (async) ---
+httpx==0.27.0
+anyio>=3.7.1
+
+# --- Optional: face detection ---
+# Uncomment when needed (requires torch to be installed first)
+# facenet-pytorch==2.6.0
+
+# --- Optional: calibration ---
+# scikit-learn==1.4.2
