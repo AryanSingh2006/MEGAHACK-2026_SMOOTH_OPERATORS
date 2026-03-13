@@ -29,9 +29,26 @@ const ClickIcon = () => (
   </svg>
 );
 
+const ShieldLogo = () => (
+  <div className="app-logo">
+    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 22C12 22 20 18 20 12V5L12 2L4 5V12C4 18 12 22 12 22Z" fill="url(#logo-grad)" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+      <path d="M9 12L11 14L15 10" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <defs>
+        <linearGradient id="logo-grad" x1="4" y1="2" x2="20" y2="22" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#00d4ff" />
+          <stop offset="1" stopColor="#0090b8" />
+        </linearGradient>
+      </defs>
+    </svg>
+  </div>
+);
+
 function ScreenOne({ onUploadImage, onSnipScreen, onClickImage, theme, onToggleTheme, clickImageStatus, onUrlSubmit, onCancelClickImage }) {
   const fileInputRef = useRef(null);
   const [urlInput, setUrlInput] = useState("");
+  const [pasteUrl, setPasteUrl] = useState("");
+  const [isDragOver, setIsDragOver] = useState(false);
 
   const handleUploadClick = () => {
     if (fileInputRef.current) {
@@ -58,14 +75,43 @@ function ScreenOne({ onUploadImage, onSnipScreen, onClickImage, theme, onToggleT
     }
   };
 
+  const handlePasteSubmit = (e) => {
+    e.preventDefault();
+    if (pasteUrl.trim()) {
+      onUrlSubmit(pasteUrl.trim());
+    }
+  };
+
+  // Handle drag & drop of URLs/text onto the paste bar
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const text = e.dataTransfer.getData("text/plain") || e.dataTransfer.getData("text/uri-list");
+    if (text && text.trim()) {
+      setPasteUrl(text.trim());
+    }
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragOver(false);
+  };
+
   return (
     <div className="screen-wrapper">
       <div className="popup-header">
-        <div className="popup-header-text">
-          <h1 className="popup-title">Image Checker</h1>
-          <p className="popup-subtitle">
-            Choose how you'd like to provide an image for AI detection.
-          </p>
+        <div className="popup-header-main">
+          <ShieldLogo />
+          <div className="popup-header-text">
+            <h1 className="popup-title">Vision Guard</h1>
+            <p className="popup-subtitle">
+              Advanced deepfake detection system.
+            </p>
+          </div>
         </div>
         <ThemeToggle theme={theme} onToggle={onToggleTheme} />
       </div>
@@ -126,52 +172,93 @@ function ScreenOne({ onUploadImage, onSnipScreen, onClickImage, theme, onToggleT
 
         {/* Action cards — show when no special status */}
         {!clickImageStatus && (
-          <div className="action-cards">
-            <button className="action-card" onClick={handleUploadClick} id="upload-image-btn">
-              <div className="action-card-icon">
-                <UploadIcon />
-              </div>
-              <div className="action-card-text">
-                <span className="action-card-label">Upload Image</span>
-                <span className="action-card-desc">Select an image file from your device</span>
-              </div>
-              <div className="action-card-arrow">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="9 18 15 12 9 6" />
-                </svg>
-              </div>
-            </button>
+          <>
+            <div className="action-cards">
+              <button className="action-card" onClick={handleUploadClick} id="upload-image-btn">
+                <div className="action-card-icon">
+                  <UploadIcon />
+                </div>
+                <div className="action-card-text">
+                  <span className="action-card-label">Upload Image</span>
+                  <span className="action-card-desc">Select an image file from your device</span>
+                </div>
+                <div className="action-card-arrow">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                </div>
+              </button>
 
-            <button className="action-card" onClick={onSnipScreen} id="snip-screen-btn">
-              <div className="action-card-icon icon-snip">
-                <SnipIcon />
-              </div>
-              <div className="action-card-text">
-                <span className="action-card-label">Snip Screen</span>
-                <span className="action-card-desc">Capture a region of your screen</span>
-              </div>
-              <div className="action-card-arrow">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="9 18 15 12 9 6" />
-                </svg>
-              </div>
-            </button>
+              <button className="action-card" onClick={onSnipScreen} id="snip-screen-btn">
+                <div className="action-card-icon icon-snip">
+                  <SnipIcon />
+                </div>
+                <div className="action-card-text">
+                  <span className="action-card-label">Snip Screen</span>
+                  <span className="action-card-desc">Capture a region of your screen</span>
+                </div>
+                <div className="action-card-arrow">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                </div>
+              </button>
 
-            <button className="action-card" onClick={onClickImage} id="click-image-btn">
-              <div className="action-card-icon icon-click">
-                <ClickIcon />
-              </div>
-              <div className="action-card-text">
-                <span className="action-card-label">Click Image</span>
-                <span className="action-card-desc">Select any image from a webpage</span>
-              </div>
-              <div className="action-card-arrow">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="9 18 15 12 9 6" />
+              <button className="action-card" onClick={onClickImage} id="click-image-btn">
+                <div className="action-card-icon icon-click">
+                  <ClickIcon />
+                </div>
+                <div className="action-card-text">
+                  <span className="action-card-label">Click Image</span>
+                  <span className="action-card-desc">Select any image from a webpage</span>
+                </div>
+                <div className="action-card-arrow">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                </div>
+              </button>
+            </div>
+
+            {/* Divider */}
+            <div className="paste-divider">
+              <div className="paste-divider-line"></div>
+              <span className="paste-divider-text">or paste a link</span>
+              <div className="paste-divider-line"></div>
+            </div>
+
+            {/* Quick paste URL bar */}
+            <form
+              className={`paste-url-bar ${isDragOver ? "paste-url-bar--drag" : ""}`}
+              onSubmit={handlePasteSubmit}
+              onDrop={handleDrop}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              id="paste-url-bar"
+            >
+              <div className="paste-url-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" />
+                  <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" />
                 </svg>
               </div>
-            </button>
-          </div>
+              <input
+                type="text"
+                className="paste-url-input"
+                placeholder="Paste or drop image URL here…"
+                value={pasteUrl}
+                onChange={(e) => setPasteUrl(e.target.value)}
+              />
+              {pasteUrl.trim() && (
+                <button type="submit" className="paste-url-go">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" width="16" height="16" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                    <polyline points="12 5 19 12 12 19" />
+                  </svg>
+                </button>
+              )}
+            </form>
+          </>
         )}
       </div>
     </div>

@@ -5,11 +5,14 @@ function ImagePreview({ src }) {
   return (
     <div className="image-preview">
       {src ? (
-        <img
-          src={src}
-          alt="Selected image for analysis"
-          className="image-preview-img"
-        />
+        <>
+          <div className="image-preview-blur" style={{ backgroundImage: `url(${src})` }} />
+          <img
+            src={src}
+            alt="Selected image for analysis"
+            className="image-preview-img"
+          />
+        </>
       ) : (
         <div className="image-preview-placeholder">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">

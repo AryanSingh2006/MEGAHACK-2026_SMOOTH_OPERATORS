@@ -3,6 +3,7 @@ import Layout from "./components/Layout.jsx";
 import ScreenOne from "./pages/ScreenOne.jsx";
 import ScreenTwo from "./pages/ScreenTwo.jsx";
 import ScreenThree from "./pages/ScreenThree.jsx";
+import ScreenSnip from "./pages/ScreenSnip.jsx";
 
 const initialAnalysis = {
   aiPercent: null,
@@ -20,13 +21,26 @@ function getInitialTheme() {
   return "dark";
 }
 
+// Check if we're running as a Chrome Extension
+function isChromeExtension() {
+  return (
+    typeof chrome !== "undefined" &&
+    chrome.runtime &&
+    chrome.runtime.id &&
+    typeof chrome.tabs !== "undefined" &&
+    typeof chrome.scripting !== "undefined"
+  );
+}
+
 function App() {
   const [currentScreen, setCurrentScreen] = useState(1);
   const [imageSrc, setImageSrc] = useState(null);
   const [imageUrl, setImageUrl] = useState(null);
+  const [imageSourceType, setImageSourceType] = useState("upload"); // 'upload' | 'url' | 'snip'
   const [analysisResult, setAnalysisResult] = useState(initialAnalysis);
   const [theme, setTheme] = useState(getInitialTheme);
-  const [clickImageStatus, setClickImageStatus] = useState(null); // 'waiting' | 'success' | 'error' | null
+  const [clickImageStatus, setClickImageStatus] = useState(null);
+  const [screenshotDataUrl, setScreenshotDataUrl] = useState(null);
 
   // Apply theme to document
   useEffect(() => {
@@ -38,6 +52,25 @@ function App() {
     }
   }, [theme]);
 
+  // On popup open, check if there's a pending clicked image from the content script
+  useEffect(() => {
+    if (!isChromeExtension()) return;
+
+    chrome.storage.local.get("pendingImage", (result) => {
+      if (result.pendingImage && result.pendingImage.url) {
+        const { url } = result.pendingImage;
+        // Clear the pending image immediately so it won't show again next time
+        chrome.runtime.sendMessage({ type: "CLEAR_PENDING_IMAGE" });
+
+        // Navigate to Screen Two with the image
+        setImageUrl(url);
+        setImageSrc(url);
+        setImageSourceType("url");
+        setCurrentScreen(2);
+      }
+    });
+  }, []);
+
   const toggleTheme = () => {
     setTheme((prev) => (prev === "dark" ? "light" : "dark"));
   };
@@ -45,56 +78,76 @@ function App() {
   const handleUploadImage = (dataUrl) => {
     setImageSrc(dataUrl);
     setImageUrl(null);
+    setImageSourceType("upload");
+    setCurrentScreen(2);
+  };
+
+  // Snip Screen — capture the visible tab then open the snip UI
+  const handleSnipScreen = async () => {
+    if (isChromeExtension()) {
+      try {
+        // captureVisibleTab captures the tab behind the popup
+        chrome.tabs.captureVisibleTab({ format: "png" }, (dataUrl) => {
+          if (chrome.runtime.lastError) {
+            console.error("Capture error:", chrome.runtime.lastError);
+            setScreenshotDataUrl(null);
+          } else {
+            setScreenshotDataUrl(dataUrl);
+          }
+          setCurrentScreen(4);
+        });
+      } catch (err) {
+        console.error("Snip error:", err);
+        setScreenshotDataUrl(null);
+        setCurrentScreen(4);
+      }
+    } else {
+      // Dev mode — open snip screen without a real screenshot
+      setScreenshotDataUrl(null);
+      setCurrentScreen(4);
+    }
+  };
+
+  // Called when user confirms the snip selection crop
+  const handleSnipConfirm = (croppedDataUrl) => {
+    setImageSrc(croppedDataUrl);
+    setImageUrl(null);
+    setImageSourceType("snip");
     setCurrentScreen(2);
   };
 
   const handleClickImage = async () => {
-    // Use Chrome Extension API to inject content script into the active tab
-    if (typeof chrome !== "undefined" && chrome.tabs && chrome.scripting) {
+    if (isChromeExtension()) {
       try {
         setClickImageStatus("waiting");
 
         // Get the active tab
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const [tab] = await chrome.tabs.query({
+          active: true,
+          currentWindow: true,
+        });
 
         if (!tab || !tab.id) {
           setClickImageStatus("error");
           return;
         }
 
-        // Inject the content script
+        // Inject the content script into the active tab
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           files: ["content-script.js"],
         });
 
-        // Listen for the message from the content script
-        const messageListener = (message) => {
-          if (message.type === "IMAGE_CLICKED") {
-            chrome.runtime.onMessage.removeListener(messageListener);
-            setImageUrl(message.url);
-            setImageSrc(message.url); // Use the URL as image source for preview
-            setClickImageStatus("success");
-            setCurrentScreen(2);
-          } else if (message.type === "IMAGE_PICK_CANCELLED") {
-            chrome.runtime.onMessage.removeListener(messageListener);
-            setClickImageStatus(null);
-          }
-        };
-
-        chrome.runtime.onMessage.addListener(messageListener);
-
-        // Close the popup (popup will close, but listener stays in background)
-        // The popup will re-open when the image is clicked, or we can use a different UX.
-        // For now, minimize the popup window so the user can interact with the page
-        window.close(); // Close popup so user can interact with the page
+        // Close the popup — user needs to interact with the page
+        // When user clicks an image, background.js stores the URL
+        // Next time the popup opens, useEffect above picks it up
+        window.close();
       } catch (err) {
         console.error("Click image error:", err);
         setClickImageStatus("error");
       }
     } else {
-      // Fallback for development (non-extension environment)
-      // Prompt user to enter an image URL manually
+      // Dev mode fallback — show URL input panel
       setClickImageStatus("fallback");
     }
   };
@@ -103,23 +156,19 @@ function App() {
     if (url && url.trim()) {
       setImageUrl(url.trim());
       setImageSrc(url.trim());
+      setImageSourceType("url");
       setClickImageStatus(null);
       setCurrentScreen(2);
     }
   };
 
-  const handleSelectImage = (sourceLabel) => {
-    // Mock for Snip Screen (to be replaced with real extension APIs)
-    setImageSrc(`mock-image-from-${sourceLabel.toLowerCase().replace(" ", "-")}`);
-    setImageUrl(null);
-    setCurrentScreen(2);
-  };
-
   const handleReset = () => {
     setImageSrc(null);
     setImageUrl(null);
+    setImageSourceType("upload");
     setAnalysisResult(initialAnalysis);
     setClickImageStatus(null);
+    setScreenshotDataUrl(null);
     setCurrentScreen(1);
   };
 
@@ -129,7 +178,7 @@ function App() {
         return (
           <ScreenOne
             onUploadImage={handleUploadImage}
-            onSnipScreen={() => handleSelectImage("Snip Screen")}
+            onSnipScreen={handleSnipScreen}
             onClickImage={handleClickImage}
             theme={theme}
             onToggleTheme={toggleTheme}
@@ -143,11 +192,20 @@ function App() {
           <ScreenTwo
             imageSrc={imageSrc}
             imageUrl={imageUrl}
+            sourceType={imageSourceType}
             onBack={() => setCurrentScreen(1)}
             onAnalyze={(result) => {
               setAnalysisResult(result);
               setCurrentScreen(3);
             }}
+          />
+        );
+      case 4:
+        return (
+          <ScreenSnip
+            screenshotDataUrl={screenshotDataUrl}
+            onSnip={handleSnipConfirm}
+            onCancel={() => setCurrentScreen(1)}
           />
         );
       case 3:
@@ -164,9 +222,7 @@ function App() {
 
   return (
     <Layout theme={theme} onToggleTheme={toggleTheme}>
-      <React.Fragment key={currentScreen}>
-        {renderScreen()}
-      </React.Fragment>
+      <React.Fragment key={currentScreen}>{renderScreen()}</React.Fragment>
     </Layout>
   );
 }
