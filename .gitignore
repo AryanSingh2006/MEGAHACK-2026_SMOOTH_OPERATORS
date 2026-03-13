@@ -1,0 +1,14 @@
+.idea/
+.vscode/
+*.iml
+
+# Python virtual environments and cache
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.pyc
+
+# OS files
+Thumbs.db
+.DS_Store
+
