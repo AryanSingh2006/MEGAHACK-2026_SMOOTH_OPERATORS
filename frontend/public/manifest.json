@@ -1,16 +1,22 @@
 {
   "manifest_version": 3,
-  "name": "Deepfake Detector",
+  "name": "Vision Guard",
   "version": "1.0",
   "description": "AI-powered deepfake image detection tool",
   "permissions": [
     "activeTab",
-    "scripting"
+    "scripting",
+    "storage"
   ],
   "action": {
     "default_popup": "index.html"
   },
   "background": {
     "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
   }
 }

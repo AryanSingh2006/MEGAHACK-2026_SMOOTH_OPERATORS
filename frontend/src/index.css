@@ -13,15 +13,15 @@
   --bg-elevated: rgba(0, 212, 255, 0.06);
 
   /* Accent */
-  --accent: #00d4ff;
-  --accent-dim: rgba(0, 212, 255, 0.5);
-  --accent-glow: rgba(0, 212, 255, 0.2);
-  --accent-glow-strong: rgba(0, 212, 255, 0.4);
-  --accent-gradient: linear-gradient(135deg, #00d4ff, #0090b8);
-  --accent-gradient-subtle: linear-gradient(135deg, rgba(0,212,255,0.12), rgba(0,144,184,0.08));
+  --accent: #00e5ff;
+  --accent-dim: rgba(0, 229, 255, 0.5);
+  --accent-glow: rgba(0, 229, 255, 0.25);
+  --accent-glow-strong: rgba(0, 229, 255, 0.45);
+  --accent-gradient: linear-gradient(135deg, #00e5ff, #00a4d6);
+  --accent-gradient-subtle: linear-gradient(135deg, rgba(0,229,255,0.15), rgba(0,164,214,0.1));
 
   /* Text */
-  --text-primary: rgba(255, 255, 255, 0.95);
+  --text-primary: #ffffff;
   --text-secondary: rgba(255, 255, 255, 0.55);
   --text-muted: rgba(255, 255, 255, 0.3);
 
@@ -31,10 +31,10 @@
   --border-glow: rgba(0, 212, 255, 0.6);
 
   /* Result colors */
-  --color-ai: #ff3b5c;
-  --color-ai-soft: rgba(255, 59, 92, 0.15);
-  --color-real: #00e676;
-  --color-real-soft: rgba(0, 230, 118, 0.15);
+  --color-ai: #ff2d55;
+  --color-ai-soft: rgba(255, 45, 85, 0.18);
+  --color-real: #00ff88;
+  --color-real-soft: rgba(0, 255, 136, 0.18);
 
   /* Shadows */
   --shadow-card: 0 0 40px rgba(0, 212, 255, 0.06), 0 0 0 1px var(--border-subtle);
@@ -92,6 +92,16 @@
 /* ============================================
    BASE STYLES
    ============================================ */
+html, body {
+  width: 370px;
+  height: 520px;
+  min-width: 370px;
+  min-height: 520px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
 html {
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   line-height: 1.5;
@@ -105,9 +115,5 @@ html {
 }
 
 body {
-  margin: 0;
-  display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
+  background-color: var(--bg-base);
 }

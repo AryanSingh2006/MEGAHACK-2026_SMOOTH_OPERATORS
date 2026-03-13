@@ -45,7 +45,7 @@
 }
 
 .btn-primary:hover:not(:disabled) {
-  box-shadow: var(--shadow-glow-strong);
+  box-shadow: 0 4px 12px var(--accent-glow);
   transform: translateY(-1px);
   filter: brightness(1.1);
 }
@@ -60,7 +60,7 @@
 .btn-secondary:hover:not(:disabled) {
   background-color: var(--bg-surface-hover);
   border-color: var(--border-accent);
-  box-shadow: var(--shadow-glow);
+  box-shadow: 0 4px 10px rgba(0,0,0,0.1);
 }
 
 /* Ghost */
@@ -148,15 +148,15 @@
 .action-card:hover {
   background: var(--bg-surface-hover);
   border-color: var(--border-accent);
-  box-shadow: var(--shadow-glow);
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
   transform: translateX(4px);
 }
 
 .action-card:hover::before,
 .action-card:hover::after {
   border-color: var(--accent);
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
 }
 
 .action-card:active {
@@ -235,16 +235,17 @@
    ======================================== */
 .image-preview {
   flex: 1;
-  border: 1px dashed var(--border-accent);
+  border: 1px solid var(--border-accent);
   border-radius: var(--radius-sm);
-  background-color: var(--bg-surface);
+  background-color: #000;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  min-height: 160px;
+  min-height: 140px;
   position: relative;
   transition: border-color 0.3s ease, background-color 0.3s ease;
+  box-shadow: inset 0 0 20px rgba(0,0,0,0.5);
 }
 
 /* corner brackets for preview */
@@ -295,6 +296,19 @@
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
+  position: relative;
+  z-index: 2;
+  box-shadow: 0 0 20px rgba(0,0,0,0.3);
+}
+
+.image-preview-blur {
+  position: absolute;
+  inset: -20px;
+  background-size: cover;
+  background-position: center;
+  filter: blur(15px) brightness(0.4);
+  opacity: 0.6;
+  z-index: 1;
 }
 
 /* ========================================
@@ -325,10 +339,35 @@
   flex-shrink: 0;
 }
 
+.image-url-label span {
+  flex: 1;
+}
+
+.url-copy-btn {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast);
+  margin-left: auto;
+}
+
+.url-copy-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--bg-surface-hover);
+  box-shadow: var(--shadow-glow);
+}
+
 .image-url-value {
   font-size: 11px;
   color: var(--text-secondary);
-  word-break: break-all;
   line-height: 1.4;
   font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', monospace;
   background: rgba(0, 0, 0, 0.15);
@@ -336,7 +375,21 @@
   border-radius: 4px;
   border: 1px solid var(--border-subtle);
   max-height: 40px;
-  overflow-y: auto;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.image-url-value::-webkit-scrollbar {
+  height: 2px;
+}
+
+.image-url-value::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.image-url-value::-webkit-scrollbar-thumb {
+  background: var(--accent-dim);
+  border-radius: 10px;
 }
 
 [data-theme="light"] .image-url-value {
@@ -522,14 +575,21 @@
 .result-card {
   flex: 1;
   background-color: var(--bg-surface);
-  padding: 16px;
+  padding: 10px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 8px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   position: relative;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
   transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+
+.result-card::-webkit-scrollbar {
+  display: none;
 }
 
 /* corner brackets */
@@ -562,9 +622,9 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 14px;
+  padding: 4px 12px;
   font-family: 'Orbitron', 'Inter', sans-serif;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   width: fit-content;
   letter-spacing: 0.08em;
@@ -595,7 +655,7 @@
 /* Probability big number */
 .probability-display {
   text-align: center;
-  padding: 8px 0;
+  padding: 2px 0;
 }
 
 .probability-label {
@@ -609,7 +669,7 @@
 
 .probability-value {
   font-family: 'Orbitron', 'Inter', sans-serif;
-  font-size: 40px;
+  font-size: 28px;
   font-weight: 700;
   line-height: 1;
   transition: color 0.3s ease;
@@ -617,19 +677,19 @@
 
 .probability-value.prob-ai {
   color: var(--color-ai);
-  text-shadow: 0 0 20px rgba(255, 59, 92, 0.3);
+  text-shadow: 0 0 12px rgba(255, 45, 85, 0.25);
 }
 
 .probability-value.prob-real {
   color: var(--color-real);
-  text-shadow: 0 0 20px rgba(0, 230, 118, 0.3);
+  text-shadow: 0 0 12px rgba(0, 255, 136, 0.25);
 }
 
 /* Result progress rows */
 .result-row {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .result-row-header {
@@ -794,4 +854,429 @@
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border-width: 0;
+}
+
+/* ========================================
+   PASTE DIVIDER
+   ======================================== */
+.paste-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+}
+
+.paste-divider-line {
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+.paste-divider-text {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+/* ========================================
+   PASTE URL BAR (Homepage quick input)
+   ======================================== */
+.paste-url-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast),
+    background-color var(--transition-fast);
+}
+
+.paste-url-bar:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.paste-url-bar--drag {
+  border-color: var(--accent);
+  background: var(--bg-surface-hover);
+  box-shadow: var(--shadow-glow), inset 0 0 20px var(--accent-glow);
+}
+
+.paste-url-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  transition: color var(--transition-fast);
+}
+
+.paste-url-bar:focus-within .paste-url-icon {
+  color: var(--accent);
+}
+
+.paste-url-input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: 'Inter', sans-serif;
+  outline: none;
+  min-width: 0;
+}
+
+.paste-url-input::placeholder {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.paste-url-go {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-gradient);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: box-shadow var(--transition-fast), transform 0.1s ease;
+  animation: pasteGoAppear 0.2s ease-out;
+}
+
+@keyframes pasteGoAppear {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.paste-url-go:hover {
+  box-shadow: var(--shadow-glow-strong);
+  transform: translateX(2px);
+}
+
+.paste-url-go:active {
+  transform: scale(0.92);
+}
+
+/* ========================================
+   SNIP SCREEN — Full-card snipping UI
+   ======================================== */
+
+/* The snip screen takes up all available card space */
+.snip-screen {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  animation: screenFadeIn var(--transition-slow) both;
+  /* Bust out of the card's padding so the canvas fills edge-to-edge */
+  margin: -10px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1px solid var(--border-accent);
+}
+
+/* ── Snip Header ───────────────────────── */
+.snip-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  flex-shrink: 0;
+}
+
+.snip-header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.snip-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  font-family: 'Orbitron', 'Inter', sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.snip-size-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: 'SFMono-Regular', 'Consolas', monospace;
+  background: var(--bg-surface);
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--border-subtle);
+  width: fit-content;
+  animation: pasteGoAppear 0.15s ease-out;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.snip-header-right {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+/* Reset button */
+.snip-reset-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast);
+  animation: pasteGoAppear 0.2s ease-out;
+}
+
+.snip-reset-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.snip-reset-btn:hover {
+  border-color: var(--border-accent);
+  color: var(--text-primary);
+  background: var(--bg-surface-hover);
+}
+
+/* Confirm (Capture) button */
+.snip-confirm-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-gradient);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: 'Inter', sans-serif;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  transition: box-shadow var(--transition-fast), transform 0.1s ease;
+  animation: pasteGoAppear 0.2s ease-out;
+  white-space: nowrap;
+}
+
+.snip-confirm-btn svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+
+.snip-confirm-btn:hover {
+  box-shadow: var(--shadow-glow-strong);
+  transform: translateY(-1px);
+}
+
+.snip-confirm-btn:active {
+  transform: scale(0.95);
+}
+
+/* Cancel button */
+.snip-cancel-btn {
+  padding: 5px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-family: 'Inter', sans-serif;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.snip-cancel-btn:hover {
+  border-color: var(--border-accent);
+  color: var(--text-primary);
+  background: var(--bg-surface-hover);
+}
+
+/* ── Canvas / Screenshot area ──────────── */
+.snip-canvas-wrapper {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  cursor: crosshair;
+  background: #060d14;
+  user-select: none;
+  min-height: 0;
+}
+
+.snip-canvas-wrapper.is-dragging {
+  cursor: crosshair;
+}
+
+/* The tab screenshot */
+.snip-screenshot {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* Dim overlay — shown when no selection is active */
+.snip-dim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+/* ── Selection rectangle ───────────────── */
+/*
+  The box-shadow trick:
+  A HUGE inset box-shadow dims everything OUTSIDE the selection rect.
+  overflow: hidden on the parent clips it to the canvas bounds.
+  This means we need NO separate dim overlay when selection is active.
+*/
+.snip-selection-rect {
+  position: absolute;
+  border: 2px solid var(--accent);
+  box-shadow:
+    0 0 0 9999px rgba(0, 0, 0, 0.5),   /* dim mask */
+    0 0 0 1px rgba(0, 212, 255, 0.3),   /* outer glow ring */
+    inset 0 0 0 1px rgba(0, 212, 255, 0.15); /* inner frost */
+  pointer-events: none;
+  animation: snipRectAppear 0.1s ease-out;
+}
+
+@keyframes snipRectAppear {
+  from { opacity: 0.3; }
+  to   { opacity: 1; }
+}
+
+/* Top-left corner bracket */
+.snip-selection-rect::before {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: -2px;
+  width: 10px;
+  height: 10px;
+  border: 2.5px solid #fff;
+  border-right: none;
+  border-bottom: none;
+  border-radius: 1px 0 0 0;
+}
+
+/* Bottom-right corner bracket */
+.snip-selection-rect::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  width: 10px;
+  height: 10px;
+  border: 2.5px solid #fff;
+  border-left: none;
+  border-top: none;
+  border-radius: 0 0 1px 0;
+}
+
+/* ── Dev-mode placeholder ──────────────── */
+.snip-no-screenshot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+}
+
+.snip-no-screenshot-icon {
+  color: var(--accent-dim);
+  width: 40px;
+  height: 40px;
+  opacity: 0.7;
+}
+
+.snip-no-screenshot-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.snip-no-screenshot-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  font-family: 'Orbitron', 'Inter', sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0;
+}
+
+.snip-no-screenshot-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.55;
+  max-width: 240px;
+  margin: 0;
+}
+
+/* ── Crosshair hint tooltip ────────────── */
+.snip-crosshair-hint {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(0, 0, 0, 0.6);
+  padding: 5px 12px;
+  border-radius: 20px;
+  border: 1px solid rgba(0, 212, 255, 0.25);
+  pointer-events: none;
+  white-space: nowrap;
+  backdrop-filter: blur(4px);
+  animation: snipHintPulse 2.5s ease-in-out infinite;
+}
+
+@keyframes snipHintPulse {
+  0%, 100% { opacity: 0.7; }
+  50%       { opacity: 1; }
 }
