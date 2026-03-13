@@ -1,878 +1,773 @@
 """
-═══════════════════════════════════════════════════════════════════
-  ELITE AI/DEEPFAKE IMAGE DETECTION PIPELINE  v3.0
-  ─────────────────────────────────────────────────────────────────
-  Techniques used:
-    1. Neural classifiers  : SigLIP, ViT, DiMA, SDXL-detector
-    2. Frequency forensics : FFT radial energy, DCT blocking artifact
-    3. Error Level Analysis: JPEG re-compression residual analysis
-    4. Noise residual      : SRM-inspired high-pass filter statistics
-    5. Color statistics    : saturation/hue distribution anomalies
-    6. EXIF metadata       : structured metadata scoring (not just flag)
-    7. Sharpness anomaly   : Laplacian variance + edge histogram
-    8. Patch-based scoring : 8×8 tile grid to catch local artifacts
-    9. Ensemble fusion     : calibrated soft-voting with uncertainty
-
-  Architecture:
-    - Async model inference with ThreadPoolExecutor
-    - Per-request image validation + quality gate
-    - Full confidence intervals + per-signal debug output
-    - Conservative / balanced / aggressive threshold modes
-    - Optional URL caching (in-memory LRU)
-
-═══════════════════════════════════════════════════════════════════
+Advanced Deepfake / AI-Generated Image Detection API  v3.0
+===========================================================
+Key improvements over v2:
+  - Majority vote system: models vote independently, ensemble is a vote count not just average
+  - Temperature scaling replaces uncalibrated Platt params
+  - Forensic streams now have real scoring power (not just tiny nudges)
+  - Smarter "Uncertain" — only fires when models genuinely disagree, not when scores average near 0.5
+  - Per-model label map: each model's label format is explicitly handled (no guesswork)
+  - Image resized to model's expected input size before inference
+  - Logging shows per-model raw scores so you can debug easily
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import io
 import logging
+import time
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import lru_cache
-from io import BytesIO
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
 
-import cv2
+import httpx
 import numpy as np
-import requests
-from fastapi import FastAPI, HTTPException, Query
-from PIL import Image, ImageFile, ImageFilter, ImageSequence
-from scipy import stats
-from transformers import pipeline
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File
+from PIL import Image, ImageFile, ImageSequence, ImageFilter
+from transformers import pipeline as hf_pipeline
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
-# ──────────────────────────────────────────────────────────────────
-#  LOGGING
-# ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
-log = logging.getLogger("deepfake_detector")
+log = logging.getLogger("deepfake")
 
-# ──────────────────────────────────────────────────────────────────
-#  CONFIGURATION  (all tunable in one place)
-# ──────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# ENUMS & MODES
+# ─────────────────────────────────────────────────────────────────────────────
 
-# HuggingFace models
-MODELS = {
-    "siglip": "prithivMLmods/deepfake-detector-model-v1",
-    "vit":    "prithivMLmods/Deep-Fake-Detector-v2-Model",
-    "dima":   "dima806/deepfake_vs_real_image_detection",
-    "sdxl":   "Organika/sdxl-detector",
-    # Additional highly accurate models:
-    "clip_based": "Wvolf/ViT-Deepfake-Detection",          # CLIP-fine-tuned
-    "efficientnet": "DunnBC22/efficientnet-b7-deepfake_image_detector",
+class DetectionMode(str, Enum):
+    FAST         = "fast"         # 2 models, no forensics   (~1-2s)
+    NORMAL       = "normal"       # 4 models + forensics     (~4-6s)
+    CONSERVATIVE = "conservative" # 4 models, high threshold (~4-6s)
+    FULL         = "full"         # 4 models + forensics + face (~8-12s)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MODEL REGISTRY
+# Each entry has: hf model id, input_size, and explicit label->meaning map.
+# "fake_labels" = substrings that mean AI-generated.
+# "real_labels" = substrings that mean real/authentic.
+# temperature < 1 sharpens scores away from 0.5 (fixes the "Uncertain" problem)
+# ─────────────────────────────────────────────────────────────────────────────
+
+MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {
+    "siglip": {
+        "model_id":    "prithivMLmods/deepfake-detector-model-v1",
+        "input_size":  224,
+        "fake_labels": {"fake", "ai-generated", "deepfake", "artificial"},
+        "real_labels": {"real", "authentic", "genuine"},
+        "weight":      0.30,
+        "temperature": 0.7,   # < 1 sharpens scores away from 0.5
+    },
+    "vit": {
+        "model_id":    "prithivMLmods/Deep-Fake-Detector-v2-Model",
+        "input_size":  224,
+        "fake_labels": {"fake", "1", "deepfake"},
+        "real_labels": {"real", "0", "authentic"},
+        "weight":      0.20,
+        "temperature": 0.75,
+    },
+    "dima": {
+        "model_id":    "dima806/deepfake_vs_real_image_detection",
+        "input_size":  224,
+        "fake_labels": {"fake", "ai", "generated", "deepfake"},
+        "real_labels": {"real", "original", "human"},
+        "weight":      0.30,
+        "temperature": 0.65,
+    },
+    "sdxl": {
+        "model_id":    "Organika/sdxl-detector",
+        "input_size":  224,
+        "fake_labels": {"artificial", "generated", "fake", "ai"},
+        "real_labels": {"natural", "real", "photo"},
+        "weight":      0.20,
+        "temperature": 0.72,
+    },
 }
 
-# Ensemble weights — must sum to 1.0
-# Neural models carry most weight; forensic signals are regularisers
-WEIGHTS: Dict[str, float] = {
-    "siglip":       0.20,
-    "vit":          0.12,
-    "dima":         0.18,
-    "sdxl":         0.08,
-    "clip_based":   0.14,
-    "efficientnet": 0.10,
-    # Forensic signals
-    "fft":          0.04,
-    "dct":          0.04,
-    "ela":          0.04,
-    "noise":        0.02,
-    "color":        0.02,
-    "sharpness":    0.01,
-    "exif":         0.01,
-}
+# ─────────────────────────────────────────────────────────────────────────────
+# THRESHOLDS
+# ─────────────────────────────────────────────────────────────────────────────
 
-assert abs(sum(WEIGHTS.values()) - 1.0) < 1e-6, "Weights must sum to 1.0"
+THRESH_FAKE              = 0.55
+THRESH_REAL              = 0.40
+THRESH_CONSERVATIVE_FAKE = 0.68
 
-# Consensus voting thresholds
-STRONG_FAKE_THRESH    = 0.72   # per-signal score ≥ this → strong fake vote
-STRONG_REAL_THRESH    = 0.28   # per-signal score ≤ this → strong real vote
-CONSENSUS_NEURAL_MIN  = 3      # # neural models agreeing before consensus fires
+VOTE_FAKE_THRESH   = 0.70
+VOTE_REAL_THRESH   = 0.30
+MAJORITY_FRACTION  = 0.5
 
-# Final decision thresholds (balanced mode)
-THRESHOLDS = {
-    "aggressive":   {"fake": 0.52, "real": 0.45},
-    "balanced":     {"fake": 0.60, "real": 0.38},
-    "conservative": {"fake": 0.75, "real": 0.30},
-}
+FORENSIC_BOOST_MAX = 0.20
 
-# Image quality gates
-MIN_SIZE_PX     = 64    # minimum dimension in pixels
-MIN_ENTROPY     = 3.5   # below this → likely blank/corrupt image
-MAX_ASPECT      = 10.0  # extreme crops likely not real photos
+# ─────────────────────────────────────────────────────────────────────────────
+# LOAD MODELS
+# ─────────────────────────────────────────────────────────────────────────────
 
-# Patch-based analysis
-PATCH_GRID      = 8     # NxN patch grid for local artifact detection
+log.info("Loading ML models ...")
 
-# Threading
-EXECUTOR_WORKERS = len(MODELS) + 2
+_classifiers: Dict[str, Any] = {}
+_loaded_models: List[str] = []
 
-# ──────────────────────────────────────────────────────────────────
-#  MODEL LOADING
-# ──────────────────────────────────────────────────────────────────
-log.info("Loading neural classifiers …")
-detectors: Dict[str, object] = {}
-
-for name, model_id in MODELS.items():
+for _name, _cfg in MODEL_REGISTRY.items():
     try:
-        detectors[name] = pipeline("image-classification", model=model_id)
-        log.info(f"  ✓ {name} ({model_id})")
-    except Exception as exc:
-        log.warning(f"  ✗ {name} FAILED to load: {exc} — will skip this model")
+        _classifiers[_name] = hf_pipeline(
+            "image-classification",
+            model=_cfg["model_id"],
+            device=-1,
+            top_k=None,
+        )
+        _loaded_models.append(_name)
+        log.info("  Loaded: %s (%s)", _name, _cfg["model_id"])
+    except Exception as _e:
+        log.warning("  Failed to load %s: %s", _name, _e)
 
-log.info(f"Loaded {len(detectors)}/{len(MODELS)} models.")
+log.info("Loaded %d/%d models: %s", len(_loaded_models), len(MODEL_REGISTRY), _loaded_models)
 
-executor = ThreadPoolExecutor(max_workers=EXECUTOR_WORKERS)
+try:
+    from facenet_pytorch import MTCNN as _MTCNN
+    _mtcnn = _MTCNN(keep_all=True, device="cpu", post_process=False)
+    FACE_DETECTION_AVAILABLE = True
+    log.info("MTCNN face detector loaded.")
+except ImportError:
+    _mtcnn = None
+    FACE_DETECTION_AVAILABLE = False
+    log.info("facenet-pytorch not installed — face analysis skipped.")
 
-app = FastAPI(
-    title="Elite Deepfake / AI Image Detector",
-    description="Multi-modal ensemble pipeline combining neural classifiers and forensic signals",
-    version="3.0.0",
-)
+# ─────────────────────────────────────────────────────────────────────────────
+# DATA STRUCTURES
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ──────────────────────────────────────────────────────────────────
-#  IMAGE LOADING
-# ──────────────────────────────────────────────────────────────────
+@dataclass
+class ImageContext:
+    pil_img:          Image.Image
+    img_bytes:        bytes
+    width:            int
+    height:           int
+    has_faces:        bool  = False
+    face_count:       int   = 0
+    face_boxes:       List  = field(default_factory=list)
+    quality_score:    float = 1.0
+    is_photo_like:    bool  = True
+    is_png:           bool  = False
+    jpeg_quality_est: float = 0.8
 
-def load_image_bytes(uri: str) -> Tuple[Optional[bytes], Optional[str]]:
-    """Download URL or decode base64 data URI. Returns (bytes, error)."""
-    decoded = urllib.parse.unquote(uri)
+
+@dataclass
+class ModelVote:
+    name:        str
+    raw_score:   float
+    cal_score:   float
+    vote:        str
+    confidence:  float
+    all_labels:  Dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class StreamResult:
+    name:    str
+    score:   float
+    flags:   List[str]      = field(default_factory=list)
+    details: Dict[str, Any] = field(default_factory=dict)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IMAGE LOADING
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def fetch_image_bytes(uri: str) -> bytes:
+    decoded = urllib.parse.unquote(uri.strip())
+    if decoded.startswith("data:image"):
+        _, encoded = decoded.split(",", 1)
+        return base64.b64decode(encoded)
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        resp = await client.get(decoded, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+        resp.raise_for_status()
+        return resp.content
+
+
+def pil_from_bytes(img_bytes: bytes) -> Image.Image:
+    img = Image.open(io.BytesIO(img_bytes))
+    if getattr(img, "is_animated", False):
+        img = next(ImageSequence.Iterator(img))
+    return img.convert("RGB")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PREPROCESSING
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_context(pil_img: Image.Image, img_bytes: bytes) -> ImageContext:
+    ctx = ImageContext(
+        pil_img   = pil_img,
+        img_bytes = img_bytes,
+        width     = pil_img.width,
+        height    = pil_img.height,
+    )
     try:
-        if decoded.startswith("data:image"):
-            _, encoded = decoded.split(",", 1)
-            return base64.b64decode(encoded), None
-        r = requests.get(decoded, headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
-        r.raise_for_status()
-        return r.content, None
-    except Exception as e:
-        return None, f"download_error: {e}"
+        probe = Image.open(io.BytesIO(img_bytes))
+        ctx.is_png = probe.format == "PNG"
+    except Exception:
+        pass
+
+    ctx.quality_score    = _quality_score(pil_img)
+    ctx.jpeg_quality_est = _jpeg_quality_estimate(img_bytes)
+    ctx.is_photo_like    = _photo_heuristic(pil_img)
+
+    if FACE_DETECTION_AVAILABLE and _mtcnn is not None:
+        try:
+            boxes, _ = _mtcnn.detect(pil_img)
+            if boxes is not None and len(boxes) > 0:
+                ctx.has_faces  = True
+                ctx.face_count = len(boxes)
+                ctx.face_boxes = boxes.tolist()
+        except Exception as e:
+            log.debug("MTCNN detect error: %s", e)
+
+    return ctx
 
 
-def pil_from_bytes(image_bytes: bytes) -> Tuple[Optional[Image.Image], Optional[str]]:
+def _quality_score(img: Image.Image) -> float:
+    px = img.width * img.height
+    res = min(1.0, px / (800 * 800))
+    gray = np.array(img.convert("L"), dtype=np.float32)
+    if gray.size == 0:
+        return float(0.4 * res)
+
+    # Pillow has no built-in Laplacian filter; approximate it with NumPy shifts.
+    lap = (
+        -4.0 * gray
+        + np.roll(gray, 1, axis=0)
+        + np.roll(gray, -1, axis=0)
+        + np.roll(gray, 1, axis=1)
+        + np.roll(gray, -1, axis=1)
+    )
+    lap[0, :] = 0.0
+    lap[-1, :] = 0.0
+    lap[:, 0] = 0.0
+    lap[:, -1] = 0.0
+
+    sharpness = float(np.clip(np.var(lap) / 500.0, 0.0, 1.0))
+    return float(0.4 * res + 0.6 * sharpness)
+
+
+def _jpeg_quality_estimate(img_bytes: bytes) -> float:
     try:
-        img = Image.open(BytesIO(image_bytes))
-        if getattr(img, "is_animated", False):
-            img = next(ImageSequence.Iterator(img))
-        return img.convert("RGB"), None
-    except Exception as e:
-        return None, f"invalid_image: {e}"
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=92)
+        ratio = len(img_bytes) / max(buf.tell(), 1)
+        return float(np.clip(ratio, 0.0, 1.5))
+    except Exception:
+        return 0.8
 
 
-def image_entropy(pil_img: Image.Image) -> float:
-    """Shannon entropy of grayscale image — low = blank/corrupt."""
-    gray = np.array(pil_img.convert("L"))
-    hist, _ = np.histogram(gray, bins=256, range=(0, 256))
-    hist = hist[hist > 0].astype(float)
-    hist /= hist.sum()
-    return float(-np.sum(hist * np.log2(hist)))
+def _photo_heuristic(img: Image.Image) -> bool:
+    arr = np.array(img, dtype=np.float32)
+    r, g, b = arr[:,:,0].flatten(), arr[:,:,1].flatten(), arr[:,:,2].flatten()
+    try:
+        corr = (np.corrcoef(r, g)[0,1] + np.corrcoef(r, b)[0,1]) / 2.0
+    except Exception:
+        corr = 0.5
+    noise = float(np.std(arr - np.array(img.filter(ImageFilter.SMOOTH_MORE), dtype=np.float32)))
+    return bool(corr > 0.55 and noise > 1.5)
 
 
-def quality_gate(pil_img: Image.Image) -> Optional[str]:
-    """Return error string if image fails quality checks, else None."""
-    w, h = pil_img.size
-    if min(w, h) < MIN_SIZE_PX:
-        return f"image_too_small ({w}x{h})"
-    if max(w, h) / max(min(w, h), 1) > MAX_ASPECT:
-        return f"extreme_aspect_ratio ({w}x{h})"
-    if image_entropy(pil_img) < MIN_ENTROPY:
-        return "image_too_uniform_or_blank"
-    return None
+# ─────────────────────────────────────────────────────────────────────────────
+# TEMPERATURE SCALING  (T < 1 sharpens, T > 1 softens)
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ──────────────────────────────────────────────────────────────────
-#  CROP UTILITIES
-# ──────────────────────────────────────────────────────────────────
+def _temperature_scale(prob: float, temperature: float) -> float:
+    if temperature == 1.0:
+        return prob
+    prob = float(np.clip(prob, 1e-6, 1 - 1e-6))
+    log_odds = np.log(prob / (1.0 - prob))
+    scaled   = log_odds / temperature
+    return float(1.0 / (1.0 + np.exp(-scaled)))
 
-def make_crops(
-        pil_img: Image.Image,
-        out_size: Tuple[int, int] = (224, 224),
-        crop_ratio: float = 0.90,
-) -> List[Image.Image]:
-    """
-    Return center + 4 corner crops.
-    Crops are weighted: center crop gets duplicated to give it 2x weight
-    when averaged, since central regions contain the most AI artifacts.
-    """
-    w, h = pil_img.size
-    cw, ch = int(w * crop_ratio), int(h * crop_ratio)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MULTI-CROP
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_crops(img: Image.Image, target_size: int = 224) -> List[Image.Image]:
+    w, h = img.size
+    cw, ch = int(w * 0.90), int(h * 0.90)
+
     if cw < 64 or ch < 64:
-        return [pil_img.resize(out_size)]
+        return [img.resize((target_size, target_size), Image.LANCZOS)]
 
-    cx0, cy0 = (w - cw) // 2, (h - ch) // 2
+    cx = (w - cw) // 2
+    cy = (h - ch) // 2
+
     boxes = [
-        (0,        0,        cw,       ch),       # TL
-        (w - cw,   0,        w,        ch),       # TR
-        (0,        h - ch,   cw,       h),        # BL
-        (w - cw,   h - ch,   w,        h),        # BR
-        (cx0,      cy0,      cx0 + cw, cy0 + ch), # center
-        (cx0,      cy0,      cx0 + cw, cy0 + ch), # center (2× weight)
+        (cx, cy, cx + cw, cy + ch),
+        (0,      0,      cw,    ch),
+        (w - cw, 0,      w,     ch),
+        (0,      h - ch, cw,    h),
+        (w - cw, h - ch, w,     h),
     ]
     crops = []
     for box in boxes:
         try:
-            crops.append(pil_img.crop(box).resize(out_size))
+            crops.append(img.crop(box).resize((target_size, target_size), Image.LANCZOS))
         except Exception:
             pass
-    return crops or [pil_img.resize(out_size)]
+    return crops if crops else [img.resize((target_size, target_size), Image.LANCZOS)]
 
 
-def patch_grid(pil_img: Image.Image, n: int = PATCH_GRID) -> List[Image.Image]:
-    """
-    Divide image into n×n patches. Used for localized artifact detection.
-    Patches at edges get extra sampling (AI artifacts concentrate at borders).
-    """
-    w, h = pil_img.size
-    pw, ph = w // n, h // n
-    if pw < 16 or ph < 16:
-        return []
-    patches = []
-    for row in range(n):
-        for col in range(n):
-            x0, y0 = col * pw, row * ph
-            patch = pil_img.crop((x0, y0, x0 + pw, y0 + ph))
-            patches.append(patch)
-    return patches
+# ─────────────────────────────────────────────────────────────────────────────
+# SINGLE MODEL INFERENCE
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ──────────────────────────────────────────────────────────────────
-#  NEURAL MODEL SCORING
-# ──────────────────────────────────────────────────────────────────
+def _score_one_model(model_name: str, clf: Any, img: Image.Image) -> ModelVote:
+    cfg         = MODEL_REGISTRY[model_name]
+    fake_labels = cfg["fake_labels"]
+    real_labels = cfg["real_labels"]
+    temperature = cfg.get("temperature", 1.0)
 
-# Label normalisation lookup — maps known labels → "fake" or "real"
-_FAKE_KEYWORDS = {"fake", "ai", "generated", "artificial", "synthetic", "deepfake", "1"}
-_REAL_KEYWORDS = {"real", "human", "authentic", "natural", "genuine", "original", "0"}
-
-
-def _label_to_ai_prob(label: str, score: float) -> float:
-    """
-    Convert a model's top-1 label + confidence to a P(AI) probability.
-    Handles all known label formats including numeric '0'/'1' schemes.
-    """
-    label_lower = label.lower().strip()
-    # Numeric label convention: '0' = real, '1' = fake (most HF models)
-    if label_lower in _FAKE_KEYWORDS:
-        return score
-    if label_lower in _REAL_KEYWORDS:
-        return 1.0 - score
-    # Fallback: assume 0.5 (uncertain)
-    log.debug(f"Unknown label '{label}' — defaulting to 0.5")
-    return 0.5
-
-
-def _run_detector_on_crop(detector, crop: Image.Image) -> float:
-    """Run a single HuggingFace pipeline on one crop, return P(AI)."""
-    results = detector(crop)
-    if not results:
-        return 0.5
-    top = results[0]
-    return _label_to_ai_prob(top.get("label", ""), float(top.get("score", 0.5)))
-
-
-def neural_score(name: str, detector, pil_img: Image.Image) -> Tuple[str, float]:
-    """
-    Score one neural model using multi-crop averaging.
-    Returns (model_name, p_ai).
-    """
     try:
-        crops = make_crops(pil_img)
-        crop_scores = [_run_detector_on_crop(detector, c) for c in crops]
-        return name, float(np.mean(crop_scores))
-    except Exception as exc:
-        log.warning(f"Model {name} error: {exc}")
-        return name, 0.5  # neutral fallback — don't crash the pipeline
+        results = clf(img)
+        if not isinstance(results, list) or not results:
+            return ModelVote(model_name, 0.5, 0.5, "abstain", 0.0)
 
+        label_scores: Dict[str, float] = {
+            str(item.get("label", "")).lower().strip(): float(item.get("score", 0.0))
+            for item in results
+        }
 
-def run_all_neural_models(pil_img: Image.Image) -> Dict[str, float]:
-    """
-    Run all loaded neural detectors in parallel using ThreadPoolExecutor.
-    Returns dict of {model_name: p_ai_score}.
-    """
-    futures = {
-        executor.submit(neural_score, name, det, pil_img): name
-        for name, det in detectors.items()
-    }
-    results = {}
-    for future in as_completed(futures):
-        name, score = future.result()
-        results[name] = score
-    return results
+        fake_prob = sum(s for lbl, s in label_scores.items() if any(k in lbl for k in fake_labels))
+        real_prob = sum(s for lbl, s in label_scores.items() if any(k in lbl for k in real_labels))
 
-# ──────────────────────────────────────────────────────────────────
-#  FORENSIC SIGNAL 1 — FFT  (improved radial energy)
-# ──────────────────────────────────────────────────────────────────
+        total = fake_prob + real_prob
+        raw   = (fake_prob / total) if total > 1e-6 else 0.5
+        cal   = _temperature_scale(raw, temperature)
 
-def fft_score(pil_img: Image.Image) -> float:
-    """
-    Radial FFT analysis.
-    AI images (especially GAN/diffusion) show characteristic high-frequency
-    energy patterns due to upsampling artifacts and checkerboard patterns.
-
-    Returns P(AI): 0.0 = real-like, 1.0 = AI-like.
-    """
-    try:
-        arr = np.array(pil_img.convert("L")).astype(np.float32)
-        h, w = arr.shape
-        crop = int(min(h, w) * 0.85)
-        y0, x0 = (h - crop) // 2, (w - crop) // 2
-        arr = arr[y0: y0 + crop, x0: x0 + crop]
-
-        f = np.fft.fft2(arr)
-        fshift = np.fft.fftshift(f)
-        mag = np.log1p(np.abs(fshift))
-
-        cy, cx = np.array(mag.shape) // 2
-        Y, X = np.ogrid[: mag.shape[0], : mag.shape[1]]
-        dist = np.sqrt((Y - cy) ** 2 + (X - cx) ** 2)
-        maxd = dist.max()
-
-        # Three rings: low / mid / high freq
-        low  = mag[dist < 0.20 * maxd].mean()
-        mid  = mag[(dist >= 0.20 * maxd) & (dist < 0.60 * maxd)].mean()
-        high = mag[dist >= 0.60 * maxd].mean()
-
-        # AI images: high LF energy (over-smooth), low HF variance
-        # GAN grid artifacts → spikes at specific HF frequencies
-        lf_ratio = low / (mid + 1e-9)
-        hf_ratio = high / (mid + 1e-9)
-
-        # Calibrated empirical sigmoid mapping
-        # Higher lf_ratio → more likely AI (over-smooth)
-        # Lower hf_ratio  → more likely AI (lack of natural HF texture)
-        ai_signal = 0.5 * (lf_ratio / (lf_ratio + 1.5)) + 0.5 * (1.0 - hf_ratio / (hf_ratio + 0.8))
-        return float(np.clip(ai_signal, 0.0, 1.0))
-    except Exception:
-        return 0.5
-
-# ──────────────────────────────────────────────────────────────────
-#  FORENSIC SIGNAL 2 — DCT  (JPEG blocking artifact score)
-# ──────────────────────────────────────────────────────────────────
-
-def dct_blocking_score(pil_img: Image.Image) -> float:
-    """
-    Analyse 8×8 DCT block boundary discontinuities.
-    Real JPEG photos show smooth block boundaries; AI images often lack
-    the characteristic blocking artifacts of real camera JPEG pipelines —
-    OR show hyper-regular DCT patterns from upsampling decoders.
-
-    Returns P(AI).
-    """
-    try:
-        arr = np.array(pil_img.convert("L")).astype(np.float32)
-        h, w = arr.shape
-        h8, w8 = (h // 8) * 8, (w // 8) * 8
-        arr = arr[:h8, :w8]
-
-        # Compute horizontal and vertical block-boundary differences
-        # True at pixel columns 7,15,23 … (block boundaries)
-        h_boundaries = np.abs(arr[:, 7::8] - arr[:, 8::8]).mean()  # across blocks
-        h_interior   = np.abs(np.diff(arr, axis=1)).mean()         # overall smoothness
-
-        v_boundaries = np.abs(arr[7::8, :] - arr[8::8, :]).mean()
-        v_interior   = np.abs(np.diff(arr, axis=0)).mean()
-
-        h_ratio = h_boundaries / (h_interior + 1e-9)
-        v_ratio = v_boundaries / (v_interior + 1e-9)
-        blocking = (h_ratio + v_ratio) / 2.0
-
-        # Blocking ratio ~1.0 = smooth everywhere (AI)
-        # Blocking ratio >1.2 = has natural JPEG blocking (real camera)
-        # Map: blocking < 0.9 → likely AI, > 1.3 → likely real
-        ai_score = 1.0 - np.clip((blocking - 0.85) / 0.55, 0.0, 1.0)
-        return float(ai_score)
-    except Exception:
-        return 0.5
-
-# ──────────────────────────────────────────────────────────────────
-#  FORENSIC SIGNAL 3 — ELA  (Error Level Analysis)
-# ──────────────────────────────────────────────────────────────────
-
-def ela_score(pil_img: Image.Image, quality: int = 92) -> float:
-    """
-    Error Level Analysis: re-save at quality and compute residual.
-    AI images: uniform ELA residual (no differential compression history).
-    Real photos: variable ELA with edges/texture showing higher residuals.
-
-    Key metric: std(ELA) / mean(ELA) — coefficient of variation.
-    Low CoV → uniform → likely AI.
-
-    Returns P(AI).
-    """
-    try:
-        buf = BytesIO()
-        pil_img.save(buf, format="JPEG", quality=quality)
-        buf.seek(0)
-        recompressed = Image.open(buf).convert("RGB")
-
-        orig_arr = np.array(pil_img).astype(np.float32)
-        recomp_arr = np.array(recompressed).astype(np.float32)
-
-        ela_map = np.abs(orig_arr - recomp_arr)
-
-        # Per-channel statistics
-        ela_means = ela_map.mean(axis=(0, 1))      # shape (3,)
-        ela_stds  = ela_map.std(axis=(0, 1))
-
-        global_mean = ela_means.mean() + 1e-9
-        global_std  = ela_stds.mean()
-
-        cov = global_std / global_mean  # coefficient of variation
-
-        # High spatial variance of ELA → natural photo
-        ela_spatial_var = ela_map.var()
-
-        # AI: low CoV (uniform compression), low spatial variance
-        # Map CoV 0…2 → AI prob 1.0…0.0
-        cov_score   = 1.0 - np.clip(cov / 1.5, 0.0, 1.0)
-        # Map spatial_var 0…3000 → AI prob 1.0…0.0
-        var_score   = 1.0 - np.clip(ela_spatial_var / 2500, 0.0, 1.0)
-
-        ela_ai_score = 0.55 * cov_score + 0.45 * var_score
-        return float(np.clip(ela_ai_score, 0.0, 1.0))
-    except Exception:
-        return 0.5
-
-# ──────────────────────────────────────────────────────────────────
-#  FORENSIC SIGNAL 4 — NOISE RESIDUAL  (SRM-inspired)
-# ──────────────────────────────────────────────────────────────────
-
-def noise_residual_score(pil_img: Image.Image) -> float:
-    """
-    High-pass filter residual analysis (inspired by SRM: Steganalysis Rich Model).
-    Camera sensor noise is structured and correlated; AI-generated images have
-    different (often more uniform or smooth) noise residuals.
-
-    Returns P(AI).
-    """
-    try:
-        arr = np.array(pil_img.convert("L")).astype(np.float32)
-
-        # 3×3 high-pass filter (Laplacian-of-Gaussian residual)
-        kernel = np.array([
-            [-1, -1, -1],
-            [-1,  8, -1],
-            [-1, -1, -1],
-        ], dtype=np.float32) / 8.0
-
-        from scipy.ndimage import convolve
-        residual = convolve(arr, kernel, mode="reflect")
-
-        # Natural camera noise: kurtosis > 5 (heavy-tailed, sensor shot noise)
-        # AI image noise: kurtosis closer to 3 (Gaussian, denoising artifacts)
-        k = float(stats.kurtosis(residual.flatten()))
-        # Normalise: kurtosis 3→AI, kurtosis 10→real
-        kurtosis_score = 1.0 - np.clip((k - 2.0) / 8.0, 0.0, 1.0)
-
-        # Skewness: camera noise should be near-zero skew
-        sk = abs(float(stats.skew(residual.flatten())))
-        skew_score = np.clip(sk / 3.0, 0.0, 1.0)  # high skew = anomalous = AI signal
-
-        return float(np.clip(0.6 * kurtosis_score + 0.4 * skew_score, 0.0, 1.0))
-    except Exception:
-        return 0.5
-
-# ──────────────────────────────────────────────────────────────────
-#  FORENSIC SIGNAL 5 — COLOR STATISTICS
-# ──────────────────────────────────────────────────────────────────
-
-def color_statistics_score(pil_img: Image.Image) -> float:
-    """
-    AI images often have:
-    - Hypersaturated colors (GAN/diffusion model over-saturation)
-    - Bimodal or spiky hue histograms (color mode collapse)
-    - Unrealistically smooth color gradients
-
-    Returns P(AI).
-    """
-    try:
-        hsv = pil_img.convert("HSV") if hasattr(pil_img, "convert") else None
-        # PIL doesn't have HSV — use numpy
-        arr_rgb = np.array(pil_img).astype(np.float32) / 255.0
-        arr_cv  = cv2.cvtColor(
-            (arr_rgb * 255).astype(np.uint8), cv2.COLOR_RGB2HSV
-        ).astype(np.float32)
-
-        hue = arr_cv[:, :, 0]        # 0–180
-        sat = arr_cv[:, :, 1] / 255  # 0–1
-        val = arr_cv[:, :, 2] / 255  # 0–1
-
-        # Metric 1: Mean saturation (AI tends higher)
-        mean_sat = sat.mean()
-        sat_score = np.clip((mean_sat - 0.3) / 0.5, 0.0, 1.0)
-
-        # Metric 2: Hue histogram peakedness (AI = spiky / mode-collapsed)
-        hue_hist, _ = np.histogram(hue.flatten(), bins=36, range=(0, 180))
-        hue_hist = hue_hist.astype(float) / hue_hist.sum()
-        hue_kurtosis = float(stats.kurtosis(hue_hist))
-        hue_score = np.clip(hue_kurtosis / 10.0, 0.0, 1.0)
-
-        # Metric 3: Color smoothness (low local std → over-smoothed → AI)
-        patch_stds = []
-        h, w = sat.shape
-        step = max(h // 8, 8)
-        for y in range(0, h - step, step):
-            for x in range(0, w - step, step):
-                patch_stds.append(sat[y:y+step, x:x+step].std())
-        smoothness_score = 1.0 - np.clip(np.mean(patch_stds) / 0.15, 0.0, 1.0)
-
-        return float(np.clip(
-            0.35 * sat_score + 0.35 * hue_score + 0.30 * smoothness_score,
-            0.0, 1.0
-        ))
-    except Exception:
-        return 0.5
-
-# ──────────────────────────────────────────────────────────────────
-#  FORENSIC SIGNAL 6 — SHARPNESS ANOMALY
-# ──────────────────────────────────────────────────────────────────
-
-def sharpness_anomaly_score(pil_img: Image.Image) -> float:
-    """
-    Measure sharpness consistency across image regions.
-    AI diffusion images often show:
-    - Hyper-sharp focal areas with unnatural background blur
-    - OR unnaturally uniform sharpness (no natural bokeh gradient)
-
-    Returns P(AI).
-    """
-    try:
-        arr = np.array(pil_img.convert("L")).astype(np.float32)
-        h, w = arr.shape
-
-        # Laplacian variance in NxN tiles
-        n = 6
-        tile_h, tile_w = h // n, w // n
-        if tile_h < 8 or tile_w < 8:
-            return 0.5
-
-        variances = []
-        for row in range(n):
-            for col in range(n):
-                tile = arr[row*tile_h:(row+1)*tile_h, col*tile_w:(col+1)*tile_w]
-                lap  = cv2.Laplacian(tile, cv2.CV_64F)
-                variances.append(lap.var())
-
-        variances = np.array(variances)
-        global_var  = variances.mean()
-        spread      = variances.std() / (global_var + 1e-9)  # relative spread
-
-        # Very high spread = strong bokeh gradient = possible AI portrait
-        # Very low spread = unnaturally uniform = possible AI
-        # Real photos: moderate spread (0.4–1.5)
-        if spread < 0.3:
-            ai_score = 0.7  # too uniform
-        elif spread > 2.0:
-            ai_score = 0.65 # too extreme
+        if cal >= VOTE_FAKE_THRESH:
+            vote = "fake"
+        elif cal <= VOTE_REAL_THRESH:
+            vote = "real"
         else:
-            ai_score = 0.5 - (spread - 0.3) / (2.0 - 0.3) * 0.2  # slight real bias
-        return float(np.clip(ai_score, 0.0, 1.0))
-    except Exception:
-        return 0.5
+            vote = "abstain"
 
-# ──────────────────────────────────────────────────────────────────
-#  FORENSIC SIGNAL 7 — EXIF (structured scoring, not just flag)
-# ──────────────────────────────────────────────────────────────────
+        log.debug("  %s raw=%.3f cal(T=%.2f)=%.3f vote=%s labels=%s",
+                  model_name, raw, temperature, cal, vote,
+                  {k: round(v, 3) for k, v in label_scores.items()})
 
-# EXIF tags we expect in real camera images
-_EXPECTED_EXIF_TAGS = {
-    "Make", "Model", "DateTime", "ExposureTime", "FNumber",
-    "ISOSpeedRatings", "Flash", "FocalLength", "ExifImageWidth",
-    "ExifImageHeight", "Software",
-}
+        return ModelVote(model_name, raw, cal, vote, abs(cal - 0.5), label_scores)
 
-def exif_ai_score(image_bytes: bytes) -> float:
-    """
-    Structured EXIF analysis. Returns P(AI).
-    - Missing EXIF entirely → likely AI (nudge toward AI)
-    - Has EXIF but no camera Make/Model → likely post-processed or AI
-    - Rich EXIF with camera metadata → likely real
-    """
+    except Exception as e:
+        log.warning("Model %s error: %s", model_name, e)
+        return ModelVote(model_name, 0.5, 0.5, "abstain", 0.0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ML ENSEMBLE WITH MAJORITY VOTING
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_ml_ensemble(
+        ctx: ImageContext,
+        model_names: Optional[List[str]] = None,
+) -> Tuple[float, List[ModelVote]]:
+
+    names = model_names or _loaded_models
+    all_votes: List[ModelVote] = []
+
+    for name in names:
+        if name not in _classifiers:
+            continue
+        clf   = _classifiers[name]
+        cfg   = MODEL_REGISTRY[name]
+        crops = _get_crops(ctx.pil_img, target_size=cfg.get("input_size", 224))
+
+        crop_scores = []
+        last_vote   = None
+        for crop in crops:
+            v = _score_one_model(name, clf, crop)
+            crop_scores.append(v.cal_score)
+            last_vote = v
+
+        if not crop_scores or last_vote is None:
+            continue
+
+        avg_cal = float(np.mean(crop_scores))
+        vote    = "fake" if avg_cal >= VOTE_FAKE_THRESH else ("real" if avg_cal <= VOTE_REAL_THRESH else "abstain")
+
+        all_votes.append(ModelVote(
+            name=name, raw_score=last_vote.raw_score, cal_score=avg_cal,
+            vote=vote, confidence=abs(avg_cal - 0.5), all_labels=last_vote.all_labels,
+        ))
+
+    if not all_votes:
+        return 0.5, []
+
+    # Weighted average
+    total_w = sum(MODEL_REGISTRY[v.name]["weight"] for v in all_votes)
+    ensemble = sum(MODEL_REGISTRY[v.name]["weight"] * v.cal_score for v in all_votes) / max(total_w, 1e-9)
+
+    # Majority vote override
+    n             = len(all_votes)
+    fake_voters   = [v for v in all_votes if v.vote == "fake"]
+    real_voters   = [v for v in all_votes if v.vote == "real"]
+
+    if len(fake_voters) / n >= MAJORITY_FRACTION and len(fake_voters) > len(real_voters):
+        majority_mean = float(np.mean([v.cal_score for v in fake_voters]))
+        ensemble = max(ensemble, 0.6 * majority_mean + 0.4 * ensemble)
+        log.info("Majority FAKE (%d/%d) -> ensemble=%.3f", len(fake_voters), n, ensemble)
+
+    elif len(real_voters) / n >= MAJORITY_FRACTION and len(real_voters) > len(fake_voters):
+        majority_mean = float(np.mean([v.cal_score for v in real_voters]))
+        ensemble = min(ensemble, 0.6 * majority_mean + 0.4 * ensemble)
+        log.info("Majority REAL (%d/%d) -> ensemble=%.3f", len(real_voters), n, ensemble)
+
+    return float(np.clip(ensemble, 0.0, 1.0)), all_votes
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FORENSIC STREAMS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_frequency_forensics(ctx: ImageContext) -> StreamResult:
     try:
-        img = Image.open(BytesIO(image_bytes))
-        exif_data = img._getexif()
-        if exif_data is None:
-            return 0.65  # no EXIF → moderate AI signal
+        arr = np.array(ctx.pil_img.convert("L"), dtype=np.float32)
+        h, w = arr.shape
+        ch, cw = int(h * 0.85), int(w * 0.85)
+        y0, x0 = (h - ch) // 2, (w - cw) // 2
+        gray   = arr[y0:y0+ch, x0:x0+cw]
 
-        from PIL.ExifTags import TAGS
-        readable = {TAGS.get(k, k): v for k, v in exif_data.items()}
-        found_tags = set(readable.keys())
+        fft  = np.abs(np.fft.fftshift(np.fft.fft2(gray)))
+        cy2, cx2 = np.array(fft.shape) // 2
+        Y, X = np.ogrid[:fft.shape[0], :fft.shape[1]]
+        dist = np.sqrt((Y - cy2)**2 + (X - cx2)**2)
+        maxd = dist.max() + 1e-9
 
-        # Camera-specific tags that AI tools rarely fake
-        camera_tags = {"Make", "Model", "ExposureTime", "FNumber", "ISOSpeedRatings"}
-        gps_tags    = {"GPSInfo"}
-        sw_tags     = {"Software"}
+        mf = fft[(dist >= 0.25 * maxd) & (dist < 0.65 * maxd)].mean() + 1e-9
+        hf = fft[dist >= 0.65 * maxd].mean() + 1e-9
+        hf_ratio = hf / mf
 
-        n_camera = len(camera_tags & found_tags)
-        has_gps  = bool(gps_tags & found_tags)
-        has_sw   = bool(sw_tags & found_tags)
-        sw_val   = str(readable.get("Software", "")).lower()
+        fft_score = float(np.clip((hf_ratio - 0.04) / 0.50, 0.0, 1.0))
 
-        # Penalise if Software field contains AI tool names
-        ai_tools = {"stable diffusion", "midjourney", "dall-e", "firefly", "comfyui", "automatic1111"}
-        if any(t in sw_val for t in ai_tools):
-            return 0.95  # near-certain AI
+        smoothed  = np.array(ctx.pil_img.filter(ImageFilter.SMOOTH_MORE), dtype=np.float32)
+        noise_std = float(np.std(np.array(ctx.pil_img, dtype=np.float32) - smoothed))
+        noise_score = float(np.clip(1.0 - (noise_std - 1.0) / 12.0, 0.0, 1.0))
 
-        # Score based on camera tag richness
-        # 0 camera tags → 0.65, 5 camera tags → 0.15
-        score = 0.65 - (n_camera / len(camera_tags)) * 0.50
-        if has_gps:
-            score -= 0.10  # GPS data strongly suggests real camera
-        return float(np.clip(score, 0.0, 1.0))
+        flags = []
+        if hf_ratio > 0.28:  flags.append("elevated_hf_spectrum")
+        if noise_std < 2.5:  flags.append("low_noise_profile")
 
-    except Exception:
-        return 0.60  # assume slight AI tendency if EXIF unreadable
+        combined = 0.55 * fft_score + 0.45 * noise_score
+        return StreamResult("frequency_forensics", float(np.clip(combined, 0.0, 1.0)),
+                            flags=flags, details={"hf_ratio": round(hf_ratio, 4),
+                                                  "noise_std": round(noise_std, 3)})
+    except Exception as e:
+        log.debug("Freq forensics error: %s", e)
+        return StreamResult("frequency_forensics", 0.5)
 
-# ──────────────────────────────────────────────────────────────────
-#  PATCH-BASED ANOMALY BOOST
-# ──────────────────────────────────────────────────────────────────
 
-def patch_ela_variance(pil_img: Image.Image) -> float:
-    """
-    Compute ELA on 8×8 patches and measure inter-patch variance.
-    Spatially uniform ELA (low variance) → AI.
-    Returns P(AI).
-    """
+def run_metadata_forensics(ctx: ImageContext) -> StreamResult:
+    flags:   List[str]     = []
+    details: Dict[str, Any] = {}
+    score    = 0.5
+
     try:
-        patches = patch_grid(pil_img, n=PATCH_GRID)
-        if not patches:
-            return 0.5
-        patch_scores = []
-        for p in patches:
-            patch_scores.append(ela_score(p, quality=90))
-        patch_scores = np.array(patch_scores)
-        variance = float(patch_scores.var())
-        # Low variance across patches → uniform → AI
-        return float(1.0 - np.clip(variance / 0.04, 0.0, 1.0))
-    except Exception:
-        return 0.5
+        probe = Image.open(io.BytesIO(ctx.img_bytes))
+        exif  = probe._getexif() if hasattr(probe, "_getexif") else None
 
-# ──────────────────────────────────────────────────────────────────
-#  ENSEMBLE FUSION
-# ──────────────────────────────────────────────────────────────────
+        if exif is None:
+            flags.append("no_exif")
+            score = 0.62
+        else:
+            tag_count  = len(exif)
+            real_score = min(1.0, tag_count / 40.0)
+            cam_tags   = {271, 272, 306, 36867, 36868, 37386, 33434}
+            found_cam  = cam_tags & set(exif.keys())
+            if found_cam:
+                real_score = min(1.0, real_score + 0.3)
+            if 34853 in exif:
+                real_score = min(1.0, real_score + 0.2)
+            score = 1.0 - real_score
+            details["exif_tags"] = tag_count
+            details["camera_tags"] = len(found_cam)
 
-def ensemble_score(
-        neural_scores: Dict[str, float],
-        forensic_scores: Dict[str, float],
-) -> Tuple[float, float, str, Dict]:
-    """
-    Combine all signals into a final score with uncertainty estimate.
+            AI_SOFTWARE = [
+                "stable diffusion", "dall-e", "midjourney", "firefly",
+                "imagen", "runway", "pika", "sora", "kling", "civitai",
+                "automatic1111", "comfyui", "fooocus", "invoke ai",
+                "novelai", "leonardo",
+            ]
+            sw = str(exif.get(305, "")).lower()
+            if sw:
+                details["software"] = sw
+                for sig in AI_SOFTWARE:
+                    if sig in sw:
+                        flags.append(f"definitive_ai_software:{sig}")
+                        score = 1.0
+                        break
 
-    Returns:
-        (final_score, confidence, label, debug_dict)
-    """
-    all_scores: Dict[str, float] = {**neural_scores, **forensic_scores}
+    except Exception as e:
+        log.debug("Metadata error: %s", e)
+        score = 0.5
 
-    # ── Consensus voting (neural models only) ──────────────────────
-    neural_values = list(neural_scores.values())
-    strong_fake_votes = sum(1 for s in neural_values if s >= STRONG_FAKE_THRESH)
-    strong_real_votes = sum(1 for s in neural_values if s <= STRONG_REAL_THRESH)
-
-    consensus_triggered = False
-    if strong_fake_votes >= CONSENSUS_NEURAL_MIN:
-        # Override to strong AI — forensic signals only provide small adjustment
-        base_score = 0.92
-        consensus_triggered = True
-        consensus_direction = "fake"
-    elif strong_real_votes >= CONSENSUS_NEURAL_MIN:
-        base_score = 0.08
-        consensus_triggered = True
-        consensus_direction = "real"
-    else:
-        base_score = None
-        consensus_direction = None
-
-    # ── Weighted sum ───────────────────────────────────────────────
-    weighted_sum = 0.0
-    weight_used  = 0.0
-    for key, weight in WEIGHTS.items():
-        score = all_scores.get(key)
-        if score is not None:
-            weighted_sum += weight * score
-            weight_used  += weight
-
-    # Re-normalise in case some models failed to load
-    weighted_avg = weighted_sum / weight_used if weight_used > 0 else 0.5
-
-    # If consensus was triggered, blend base_score with weighted average
-    if consensus_triggered:
-        final_score = 0.7 * base_score + 0.3 * weighted_avg
-    else:
-        final_score = weighted_avg
-
-    final_score = float(np.clip(final_score, 0.0, 1.0))
-
-    # ── Uncertainty / confidence ───────────────────────────────────
-    # Spread of neural model scores tells us how much they disagree
-    if len(neural_values) >= 2:
-        disagreement = float(np.std(neural_values))
-    else:
-        disagreement = 0.25  # single model → assume uncertainty
-
-    # High disagreement → lower confidence
-    raw_confidence = 1.0 - disagreement * 1.5
-    confidence = float(np.clip(raw_confidence, 0.05, 1.0))
-
-    debug = {
-        "neural_scores": neural_scores,
-        "forensic_scores": forensic_scores,
-        "weighted_average": round(weighted_avg, 4),
-        "final_score": round(final_score, 4),
-        "confidence": round(confidence, 4),
-        "model_disagreement_std": round(disagreement, 4),
-        "strong_fake_votes": strong_fake_votes,
-        "strong_real_votes": strong_real_votes,
-        "consensus_triggered": consensus_triggered,
-        "consensus_direction": consensus_direction,
-    }
-
-    return final_score, confidence, debug
+    return StreamResult("metadata_forensics", float(np.clip(score, 0.0, 1.0)),
+                        flags=flags, details=details)
 
 
-def decide_label(
-        final_score: float,
-        confidence: float,
-        mode: str = "balanced",
-) -> Tuple[str, str]:
-    """
-    Apply threshold decision. Returns (label, confidence_label).
-    """
-    thresholds = THRESHOLDS.get(mode, THRESHOLDS["balanced"])
-    fake_t = thresholds["fake"]
-    real_t = thresholds["real"]
+def run_pixel_forensics(ctx: ImageContext) -> StreamResult:
+    flags:   List[str]     = []
+    details: Dict[str, Any] = {}
 
-    if final_score >= fake_t:
-        label = "AI Generated"
-    elif final_score <= real_t:
-        label = "Real"
-    else:
-        label = "Uncertain"
+    try:
+        buf = io.BytesIO()
+        ctx.pil_img.save(buf, format="JPEG", quality=85)
+        buf.seek(0)
+        comp = Image.open(buf).convert("RGB")
+        diff = np.abs(np.array(ctx.pil_img, dtype=np.float32) - np.array(comp, dtype=np.float32))
+        ela_std = float(np.std(diff))
+        # Clean images (low ela_std) = more AI-like
+        ela_score = float(np.clip(1.0 - (ela_std / 18.0), 0.0, 1.0))
+        details["ela_std"] = round(ela_std, 3)
+        if ela_std < 3.5:
+            flags.append("very_low_ela_variance")
 
-    if confidence >= 0.80:
-        conf_label = "High"
-    elif confidence >= 0.55:
-        conf_label = "Medium"
-    else:
-        conf_label = "Low"
+        arr = np.array(ctx.pil_img, dtype=np.float32)
+        kurt_scores = []
+        for ch in range(3):
+            channel = arr[:,:,ch].flatten()
+            mu, sigma = channel.mean(), channel.std() + 1e-6
+            kurt = float(np.mean(((channel - mu) / sigma) ** 4))
+            kurt_scores.append(float(np.clip(abs(kurt - 3.0) / 6.0, 0.0, 1.0)))
+        color_score = float(np.mean(kurt_scores))
+        details["color_kurtosis"] = round(color_score, 3)
+        if color_score > 0.6:
+            flags.append("unusual_color_distribution")
 
-    return label, conf_label
+        combined = 0.60 * ela_score + 0.40 * color_score
+        return StreamResult("pixel_forensics", float(np.clip(combined, 0.0, 1.0)),
+                            flags=flags, details=details)
+    except Exception as e:
+        log.debug("Pixel forensics error: %s", e)
+        return StreamResult("pixel_forensics", 0.5)
 
-# ──────────────────────────────────────────────────────────────────
-#  FULL PIPELINE
-# ──────────────────────────────────────────────────────────────────
 
-def run_full_pipeline(
-        image_bytes: bytes,
-        pil_img: Image.Image,
-        mode: str = "balanced",
-) -> Dict:
-    """
-    Orchestrates the complete detection pipeline.
-    Neural models run in parallel; forensic signals run concurrently.
-    """
+def run_face_analysis(ctx: ImageContext) -> StreamResult:
+    if not ctx.has_faces or not FACE_DETECTION_AVAILABLE:
+        return StreamResult("face_analysis", 0.5, flags=["no_faces" if not ctx.has_faces else "unavailable"])
 
-    # ── Run neural models (parallel) ──────────────────────────────
-    neural_scores = run_all_neural_models(pil_img)
-
-    # ── Run forensic signals (parallel via futures) ────────────────
-    forensic_fns = {
-        "fft":        lambda: fft_score(pil_img),
-        "dct":        lambda: dct_blocking_score(pil_img),
-        "ela":        lambda: ela_score(pil_img),
-        "noise":      lambda: noise_residual_score(pil_img),
-        "color":      lambda: color_statistics_score(pil_img),
-        "sharpness":  lambda: sharpness_anomaly_score(pil_img),
-        "exif":       lambda: exif_ai_score(image_bytes),
-    }
-
-    forensic_futures = {
-        executor.submit(fn): name
-        for name, fn in forensic_fns.items()
-    }
-    forensic_scores: Dict[str, float] = {}
-    for future in as_completed(forensic_futures):
-        name = forensic_futures[future]
+    face_scores = []
+    for box in ctx.face_boxes[:4]:
         try:
-            forensic_scores[name] = future.result()
-        except Exception as exc:
-            log.warning(f"Forensic signal {name} failed: {exc}")
-            forensic_scores[name] = 0.5
+            x1, y1, x2, y2 = [int(v) for v in box]
+            px = int((x2 - x1) * 0.25)
+            py = int((y2 - y1) * 0.25)
+            crop = ctx.pil_img.crop((
+                max(0, x1-px), max(0, y1-py),
+                min(ctx.width, x2+px), min(ctx.height, y2+py)
+            ))
+            if crop.width < 48 or crop.height < 48:
+                continue
+            for name in _loaded_models:
+                cfg     = MODEL_REGISTRY[name]
+                resized = crop.resize((cfg["input_size"], cfg["input_size"]), Image.LANCZOS)
+                v       = _score_one_model(name, _classifiers[name], resized)
+                face_scores.append(v.cal_score)
+        except Exception as e:
+            log.debug("Face crop error: %s", e)
 
-    # ── Ensemble & decide ──────────────────────────────────────────
-    final_score, confidence, debug = ensemble_score(neural_scores, forensic_scores)
-    label, conf_label = decide_label(final_score, confidence, mode)
+    if not face_scores:
+        return StreamResult("face_analysis", 0.5, flags=["crop_too_small"])
 
-    # ── Build response ─────────────────────────────────────────────
+    return StreamResult("face_analysis", float(np.mean(face_scores)),
+                        details={"face_count": ctx.face_count})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FORENSIC BOOST
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _forensic_boost(freq: StreamResult, meta: StreamResult, pixel: StreamResult, ml_score: float) -> float:
+    # Definitive AI software tag overrides everything
+    for f in meta.flags:
+        if f.startswith("definitive_ai_software"):
+            return FORENSIC_BOOST_MAX
+
+    weights = {"metadata_forensics": 0.45, "pixel_forensics": 0.30, "frequency_forensics": 0.25}
+    streams = {"metadata_forensics": meta, "pixel_forensics": pixel, "frequency_forensics": freq}
+
+    weighted = sum(weights[n] * s.score for n, s in streams.items())
+    nudge = (weighted - 0.5) * 2.0 * FORENSIC_BOOST_MAX
+
+    # Dampen if forensics oppose ML
+    if ml_score > 0.5 and nudge < 0:
+        nudge *= 0.3
+    elif ml_score < 0.5 and nudge > 0:
+        nudge *= 0.3
+
+    return float(np.clip(nudge, -FORENSIC_BOOST_MAX, FORENSIC_BOOST_MAX))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DECISION ENGINE
+# ─────────────────────────────────────────────────────────────────────────────
+
+def make_decision(
+        ml_score: float,
+        votes:    List[ModelVote],
+        face:     StreamResult,
+        freq:     StreamResult,
+        meta:     StreamResult,
+        pixel:    StreamResult,
+        ctx:      ImageContext,
+        mode:     DetectionMode,
+) -> Dict[str, Any]:
+
+    combined_ml = (0.65 * ml_score + 0.35 * face.score
+                   if face.score != 0.5 and ctx.has_faces and mode == DetectionMode.FULL
+                   else ml_score)
+
+    boost = _forensic_boost(freq, meta, pixel, combined_ml)
+    final = float(np.clip(combined_ml + boost, 0.0, 1.0))
+
+    log.info("Decision | ml=%.3f face=%.3f boost=%.3f final=%.3f",
+             ml_score, face.score, boost, final)
+
+    fake_thresh = THRESH_CONSERVATIVE_FAKE if mode == DetectionMode.CONSERVATIVE else THRESH_FAKE
+
+    if final >= fake_thresh:
+        prediction = "AI Generated"
+        confidence = "high" if final > 0.80 else "medium"
+    elif final <= THRESH_REAL:
+        prediction = "Real"
+        confidence = "high" if final < 0.15 else "medium"
+    else:
+        prediction = "Uncertain"
+        confidence = "low"
+
+    std = float(np.std([v.cal_score for v in votes])) if votes else 0.1
+    ci_lo = round(float(np.clip(final - 1.5 * std, 0.0, 1.0)), 3)
+    ci_hi = round(float(np.clip(final + 1.5 * std, 0.0, 1.0)), 3)
+
+    all_flags = []
+    for s in [freq, meta, pixel, face]:
+        all_flags.extend(s.flags)
+
     return {
-        "prediction":        label,
-        "final_score":       round(final_score, 4),
-        "confidence":        round(confidence, 4),
-        "confidence_level":  conf_label,
-        "mode":              mode,
-        "neural_scores": {
-            k: round(v, 4) for k, v in neural_scores.items()
+        "prediction":   prediction,
+        "confidence":   confidence,
+        "final_score":  round(final, 4),
+        "ml_score":     round(combined_ml, 4),
+        "forensic_boost": round(boost, 4),
+        "confidence_interval": {"low": ci_lo, "high": ci_hi},
+        "votes": {
+            "per_model":  {v.name: {"raw": round(v.raw_score,3), "cal": round(v.cal_score,3), "vote": v.vote} for v in votes},
+            "fake_voters": [v.name for v in votes if v.vote == "fake"],
+            "real_voters": [v.name for v in votes if v.vote == "real"],
+            "abstained":   [v.name for v in votes if v.vote == "abstain"],
         },
-        "forensic_scores": {
-            k: round(v, 4) for k, v in forensic_scores.items()
-        },
-        "debug": {
-            **debug,
-            "models_loaded": list(detectors.keys()),
-        },
+        "flags": all_flags,
     }
 
-# ──────────────────────────────────────────────────────────────────
-#  API ENDPOINTS
-# ──────────────────────────────────────────────────────────────────
 
-@app.post("/detect", summary="Detect AI-generated or real image")
-def detect(
-        image_url: str = Query(..., description="Public image URL or base64 data URI"),
-        mode: str = Query("normal", description="Mode: fast | normal | conservative | full"),
+# ─────────────────────────────────────────────────────────────────────────────
+# FASTAPI
+# ─────────────────────────────────────────────────────────────────────────────
+
+app = FastAPI(
+    title="Deepfake & AI Image Detector",
+    description="ML voting + frequency + metadata + pixel forensics",
+    version="3.0.0",
+)
+
+
+async def _run_pipeline(img_bytes: bytes, mode: DetectionMode) -> Dict[str, Any]:
+    t0       = time.perf_counter()
+    img_hash = hashlib.sha256(img_bytes).hexdigest()[:16]
+
+    try:
+        pil_img = pil_from_bytes(img_bytes)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Cannot decode image: {e}")
+
+    ctx    = build_context(pil_img, img_bytes)
+    loop   = asyncio.get_event_loop()
+    models = ["siglip", "dima"] if mode == DetectionMode.FAST else _loaded_models
+
+    ml_score, votes = await loop.run_in_executor(None, run_ml_ensemble, ctx, models)
+    freq  = await loop.run_in_executor(None, run_frequency_forensics, ctx)
+    meta  = await loop.run_in_executor(None, run_metadata_forensics, ctx)
+    pixel = await loop.run_in_executor(None, run_pixel_forensics, ctx)
+    face  = (await loop.run_in_executor(None, run_face_analysis, ctx)
+             if mode == DetectionMode.FULL
+             else StreamResult("face_analysis", 0.5, flags=["skipped"]))
+
+    decision = make_decision(ml_score, votes, face, freq, meta, pixel, ctx, mode)
+    elapsed  = time.perf_counter() - t0
+
+    log.info("Result | hash=%s | %s | score=%.3f | %.0fms",
+             img_hash, decision["prediction"], decision["final_score"], elapsed * 1000)
+
+    return {
+        **decision,
+        "mode": mode.value,
+        "streams": {
+            "frequency_forensics": {"score": round(freq.score,4),  "details": freq.details,  "flags": freq.flags},
+            "metadata_forensics":  {"score": round(meta.score,4),  "details": meta.details,  "flags": meta.flags},
+            "pixel_forensics":     {"score": round(pixel.score,4), "details": pixel.details, "flags": pixel.flags},
+            "face_analysis":       {"score": round(face.score,4) if face.score != 0.5 else None,
+                                    "details": face.details, "flags": face.flags},
+        },
+        "image_info": {
+            "width": ctx.width, "height": ctx.height,
+            "is_png": ctx.is_png, "has_faces": ctx.has_faces,
+            "face_count": ctx.face_count, "quality": round(ctx.quality_score, 3),
+            "photo_like": ctx.is_photo_like, "sha256": img_hash,
+        },
+        "processing_ms": round(elapsed * 1000, 1),
+    }
+
+
+@app.post("/detect", summary="Detect from URL or base64", response_model=None)
+async def detect_url(
+        image_url: str = Query(..., description="Image URL or data:image/... base64"),
+        mode: str = Query("normal", description="fast | normal | conservative | full"),
 ):
-    log.info(f"/detect called | mode={mode}")
+    try:
+        det_mode = DetectionMode(mode)
+    except ValueError:
+        raise HTTPException(400, f"mode must be one of: {[m.value for m in DetectionMode]}")
+    try:
+        img_bytes = await fetch_image_bytes(image_url)
+    except Exception as e:
+        raise HTTPException(400, f"Could not fetch image: {e}")
+    return await _run_pipeline(img_bytes, det_mode)
 
-    # 1. Load
-    img_bytes, err = load_image_bytes(image_url)
-    if err:
-        raise HTTPException(status_code=400, detail=err)
 
-    # 2. Parse
-    pil_img, err2 = pil_from_bytes(img_bytes)
-    if err2:
-        raise HTTPException(status_code=422, detail=err2)
-
-    # 3. Quality gate
-    quality_err = quality_gate(pil_img)
-    if quality_err:
-        raise HTTPException(status_code=422, detail=f"image_quality_issue: {quality_err}")
-
-    # 4. Full pipeline
-    result = run_full_pipeline(img_bytes, pil_img, mode=mode)
-    log.info(f"Result: {result['prediction']} | score={result['final_score']:.3f} | conf={result['confidence']:.3f}")
-    return result
+@app.post("/detect/upload", summary="Detect from file upload", response_model=None)
+async def detect_upload(
+        file: UploadFile = File(...),
+        mode: str = Query("normal", description="fast | normal | conservative | full"),
+):
+    try:
+        det_mode = DetectionMode(mode)
+    except ValueError:
+        raise HTTPException(400, f"mode must be one of: {[m.value for m in DetectionMode]}")
+    img_bytes = await file.read()
+    return await _run_pipeline(img_bytes, det_mode)
 
 
 @app.get("/health")
-def health():
+async def health():
     return {
-        "status": "ok",
-        "models_loaded": list(detectors.keys()),
-        "models_failed": [k for k in MODELS if k not in detectors],
-        "weights": WEIGHTS,
+        "status": "ok", "version": "3.0.0",
+        "models_loaded": _loaded_models,
+        "face_detection": FACE_DETECTION_AVAILABLE,
+        "modes": [m.value for m in DetectionMode],
+        "thresholds": {"fake": THRESH_FAKE, "real": THRESH_REAL, "conservative": THRESH_CONSERVATIVE_FAKE},
     }
-
-
-@app.get("/thresholds")
-def get_thresholds():
-    return {"modes": THRESHOLDS, "current_weights": WEIGHTS}
-
-
-# ──────────────────────────────────────────────────────────────────
-#  ENTRY POINT
-# ──────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("deepfake_detector:app", host="0.0.0.0", port=8000, reload=False)
