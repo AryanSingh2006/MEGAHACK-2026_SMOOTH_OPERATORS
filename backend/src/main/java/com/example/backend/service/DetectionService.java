@@ -1,42 +1,54 @@
 package com.example.backend.service;
 
 import com.example.backend.dto.DeepfakeApiRawResponse;
-import com.example.backend.dto.DetectionRequest;
-import com.example.backend.dto.DetectionResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
-
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
+import org.springframework.web.util.UriComponentsBuilder;
 
 @Service
 public class DetectionService {
 
+    private static final Logger log = LoggerFactory.getLogger(DetectionService.class);
+    private static final String AI_SERVICE_URL = "http://localhost:8000/detect";
+
     private final RestTemplate restTemplate = new RestTemplate();
 
-    private static final String DETECTOR_URL =
-            "http://localhost:8000/detect?image_url=";
+    /**
+     * Forwards the image URL to the AI service for deepfake detection.
+     *
+     * @param imageUrl  HTTP(S) URL or data:image URI to analyse
+     * @return the raw response from the AI service
+     * @throws RuntimeException if the AI service is unreachable or returns an error
+     */
+    public DeepfakeApiRawResponse detect(String imageUrl) {
 
-    public DetectionResponse detect(DetectionRequest request) {
+        String url = UriComponentsBuilder
+                .fromUriString(AI_SERVICE_URL)
+                .queryParam("image_url", imageUrl)
+                .toUriString();
 
-        String encodedImageUrl = URLEncoder.encode(
-                request.getImageUrl(),
-                StandardCharsets.UTF_8
-        );
+        log.info("Calling AI service: {}", AI_SERVICE_URL);
 
-        String url = DETECTOR_URL + encodedImageUrl;
+        try {
+            ResponseEntity<DeepfakeApiRawResponse> response =
+                    restTemplate.postForEntity(url, null, DeepfakeApiRawResponse.class);
 
-        DeepfakeApiRawResponse apiResponse =
-                restTemplate.postForObject(url, null, DeepfakeApiRawResponse.class);
+            if (response.getBody() == null) {
+                throw new RuntimeException("AI service returned an empty response");
+            }
 
-        if (apiResponse == null) {
-            return null;
+            log.info("AI service response: prediction={}, score={}",
+                    response.getBody().getPrediction(),
+                    response.getBody().getFinal_score());
+
+            return response.getBody();
+        } catch (RestClientException e) {
+            log.error("AI service call failed: {}", e.getMessage());
+            throw new RuntimeException("Failed to reach AI detection service", e);
         }
-
-        DetectionResponse response = new DetectionResponse();
-        response.setPrediction(apiResponse.getPrediction());
-        response.setConfidence(apiResponse.getConfidence());
-        response.setFinal_score(apiResponse.getFinal_score());
-        return response;
     }
 }

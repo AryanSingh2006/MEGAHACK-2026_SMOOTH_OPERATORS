@@ -24,11 +24,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
-import httpx
-import numpy as np
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File
-from PIL import Image, ImageFile, ImageSequence, ImageFilter
-from transformers import pipeline as hf_pipeline
+import httpx  # type: ignore
+import numpy as np  # type: ignore
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File  # type: ignore
+from PIL import Image, ImageFile, ImageSequence, ImageFilter  # type: ignore
+from transformers import pipeline as hf_pipeline  # type: ignore
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -131,7 +131,7 @@ for _name, _cfg in MODEL_REGISTRY.items():
 log.info("Loaded %d/%d models: %s", len(_loaded_models), len(MODEL_REGISTRY), _loaded_models)
 
 try:
-    from facenet_pytorch import MTCNN as _MTCNN
+    from facenet_pytorch import MTCNN as _MTCNN  # type: ignore
     _mtcnn = _MTCNN(keep_all=True, device="cpu", post_process=False)
     FACE_DETECTION_AVAILABLE = True
     log.info("MTCNN face detector loaded.")
@@ -152,7 +152,7 @@ class ImageContext:
     height:           int
     has_faces:        bool  = False
     face_count:       int   = 0
-    face_boxes:       List  = field(default_factory=list)
+    face_boxes:       List[Any]  = field(default_factory=list)
     quality_score:    float = 1.0
     is_photo_like:    bool  = True
     is_png:           bool  = False
@@ -188,10 +188,16 @@ async def fetch_image_bytes(uri: str) -> bytes:
         return base64.b64decode(encoded)
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
         resp = await client.get(decoded, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+            "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
         })
         resp.raise_for_status()
         return resp.content
+    return b""
 
 
 def pil_from_bytes(img_bytes: bytes) -> Image.Image:
@@ -225,7 +231,7 @@ def build_context(pil_img: Image.Image, img_bytes: bytes) -> ImageContext:
     if FACE_DETECTION_AVAILABLE and _mtcnn is not None:
         try:
             boxes, _ = _mtcnn.detect(pil_img)
-            if boxes is not None and len(boxes) > 0:
+            if boxes is not None and len(boxes) > 0:  # type: ignore
                 ctx.has_faces  = True
                 ctx.face_count = len(boxes)
                 ctx.face_boxes = boxes.tolist()
@@ -243,7 +249,7 @@ def _quality_score(img: Image.Image) -> float:
         return float(0.4 * res)
 
     # Pillow has no built-in Laplacian filter; approximate it with NumPy shifts.
-    lap = (
+    lap = np.asarray(
         -4.0 * gray
         + np.roll(gray, 1, axis=0)
         + np.roll(gray, -1, axis=0)
@@ -360,7 +366,7 @@ def _score_one_model(model_name: str, clf: Any, img: Image.Image) -> ModelVote:
 
         log.debug("  %s raw=%.3f cal(T=%.2f)=%.3f vote=%s labels=%s",
                   model_name, raw, temperature, cal, vote,
-                  {k: round(v, 3) for k, v in label_scores.items()})
+                  {k: round(v, 3) for k, v in label_scores.items()})  # type: ignore
 
         return ModelVote(model_name, raw, cal, vote, abs(cal - 0.5), label_scores)
 
@@ -397,6 +403,7 @@ def run_ml_ensemble(
 
         if not crop_scores or last_vote is None:
             continue
+        assert last_vote is not None
 
         avg_cal = float(np.mean(crop_scores))
         vote    = "fake" if avg_cal >= VOTE_FAKE_THRESH else ("real" if avg_cal <= VOTE_REAL_THRESH else "abstain")
@@ -411,7 +418,7 @@ def run_ml_ensemble(
 
     # Weighted average
     total_w = sum(MODEL_REGISTRY[v.name]["weight"] for v in all_votes)
-    ensemble = sum(MODEL_REGISTRY[v.name]["weight"] * v.cal_score for v in all_votes) / max(total_w, 1e-9)
+    ensemble = sum(MODEL_REGISTRY[v.name]["weight"] * v.cal_score for v in all_votes) / (total_w if total_w >= 1e-9 else 1e-9)
 
     # Majority vote override
     n             = len(all_votes)
@@ -465,8 +472,8 @@ def run_frequency_forensics(ctx: ImageContext) -> StreamResult:
 
         combined = 0.55 * fft_score + 0.45 * noise_score
         return StreamResult("frequency_forensics", float(np.clip(combined, 0.0, 1.0)),
-                            flags=flags, details={"hf_ratio": round(hf_ratio, 4),
-                                                  "noise_std": round(noise_std, 3)})
+                            flags=flags, details={"hf_ratio": round(hf_ratio, 4),  # type: ignore
+                                                  "noise_std": round(noise_std, 3)})  # type: ignore
     except Exception as e:
         log.debug("Freq forensics error: %s", e)
         return StreamResult("frequency_forensics", 0.5)
@@ -533,7 +540,7 @@ def run_pixel_forensics(ctx: ImageContext) -> StreamResult:
         ela_std = float(np.std(diff))
         # Clean images (low ela_std) = more AI-like
         ela_score = float(np.clip(1.0 - (ela_std / 18.0), 0.0, 1.0))
-        details["ela_std"] = round(ela_std, 3)
+        details["ela_std"] = round(ela_std, 3)  # type: ignore
         if ela_std < 3.5:
             flags.append("very_low_ela_variance")
 
@@ -545,7 +552,7 @@ def run_pixel_forensics(ctx: ImageContext) -> StreamResult:
             kurt = float(np.mean(((channel - mu) / sigma) ** 4))
             kurt_scores.append(float(np.clip(abs(kurt - 3.0) / 6.0, 0.0, 1.0)))
         color_score = float(np.mean(kurt_scores))
-        details["color_kurtosis"] = round(color_score, 3)
+        details["color_kurtosis"] = round(color_score, 3)  # type: ignore
         if color_score > 0.6:
             flags.append("unusual_color_distribution")
 
@@ -562,7 +569,7 @@ def run_face_analysis(ctx: ImageContext) -> StreamResult:
         return StreamResult("face_analysis", 0.5, flags=["no_faces" if not ctx.has_faces else "unavailable"])
 
     face_scores = []
-    for box in ctx.face_boxes[:4]:
+    for box in ctx.face_boxes[:4]:  # type: ignore
         try:
             x1, y1, x2, y2 = [int(v) for v in box]
             px = int((x2 - x1) * 0.25)
@@ -651,8 +658,8 @@ def make_decision(
         confidence = "low"
 
     std = float(np.std([v.cal_score for v in votes])) if votes else 0.1
-    ci_lo = round(float(np.clip(final - 1.5 * std, 0.0, 1.0)), 3)
-    ci_hi = round(float(np.clip(final + 1.5 * std, 0.0, 1.0)), 3)
+    ci_lo = round(float(np.clip(final - 1.5 * std, 0.0, 1.0)), 3)  # type: ignore
+    ci_hi = round(float(np.clip(final + 1.5 * std, 0.0, 1.0)), 3)  # type: ignore
 
     all_flags = []
     for s in [freq, meta, pixel, face]:
@@ -661,12 +668,12 @@ def make_decision(
     return {
         "prediction":   prediction,
         "confidence":   confidence,
-        "final_score":  round(final, 4),
-        "ml_score":     round(combined_ml, 4),
-        "forensic_boost": round(boost, 4),
+        "final_score":  round(final, 4),  # type: ignore
+        "ml_score":     round(combined_ml, 4),  # type: ignore
+        "forensic_boost": round(boost, 4),  # type: ignore
         "confidence_interval": {"low": ci_lo, "high": ci_hi},
         "votes": {
-            "per_model":  {v.name: {"raw": round(v.raw_score,3), "cal": round(v.cal_score,3), "vote": v.vote} for v in votes},
+            "per_model":  {v.name: {"raw": round(v.raw_score,3), "cal": round(v.cal_score,3), "vote": v.vote} for v in votes},  # type: ignore
             "fake_voters": [v.name for v in votes if v.vote == "fake"],
             "real_voters": [v.name for v in votes if v.vote == "real"],
             "abstained":   [v.name for v in votes if v.vote == "abstain"],
@@ -686,9 +693,26 @@ app = FastAPI(
 )
 
 
+def _sanitize_for_json(obj: Any) -> Any:
+    """Recursively convert numpy scalars/arrays to JSON-safe Python types."""
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    return obj
+
+
 async def _run_pipeline(img_bytes: bytes, mode: DetectionMode) -> Dict[str, Any]:
     t0       = time.perf_counter()
-    img_hash = hashlib.sha256(img_bytes).hexdigest()[:16]
+    img_hash = str(hashlib.sha256(img_bytes).hexdigest())[:16]  # type: ignore
 
     try:
         pil_img = pil_from_bytes(img_bytes)
@@ -713,24 +737,26 @@ async def _run_pipeline(img_bytes: bytes, mode: DetectionMode) -> Dict[str, Any]
     log.info("Result | hash=%s | %s | score=%.3f | %.0fms",
              img_hash, decision["prediction"], decision["final_score"], elapsed * 1000)
 
-    return {
+    result = {
         **decision,
         "mode": mode.value,
         "streams": {
-            "frequency_forensics": {"score": round(freq.score,4),  "details": freq.details,  "flags": freq.flags},
-            "metadata_forensics":  {"score": round(meta.score,4),  "details": meta.details,  "flags": meta.flags},
-            "pixel_forensics":     {"score": round(pixel.score,4), "details": pixel.details, "flags": pixel.flags},
-            "face_analysis":       {"score": round(face.score,4) if face.score != 0.5 else None,
+            "frequency_forensics": {"score": round(freq.score,4),  "details": freq.details,  "flags": freq.flags},  # type: ignore
+            "metadata_forensics":  {"score": round(meta.score,4),  "details": meta.details,  "flags": meta.flags},  # type: ignore
+            "pixel_forensics":     {"score": round(pixel.score,4), "details": pixel.details, "flags": pixel.flags},  # type: ignore
+            "face_analysis":       {"score": round(face.score,4) if face.score != 0.5 else None,  # type: ignore
                                     "details": face.details, "flags": face.flags},
         },
         "image_info": {
             "width": ctx.width, "height": ctx.height,
             "is_png": ctx.is_png, "has_faces": ctx.has_faces,
-            "face_count": ctx.face_count, "quality": round(ctx.quality_score, 3),
+            "face_count": ctx.face_count, "quality": round(ctx.quality_score, 3),  # type: ignore
             "photo_like": ctx.is_photo_like, "sha256": img_hash,
         },
-        "processing_ms": round(elapsed * 1000, 1),
+        "processing_ms": round(elapsed * 1000, 1),  # type: ignore
     }
+
+    return _sanitize_for_json(result)  # type: ignore
 
 
 @app.post("/detect", summary="Detect from URL or base64", response_model=None)
@@ -739,14 +765,15 @@ async def detect_url(
         mode: str = Query("normal", description="fast | normal | conservative | full"),
 ):
     try:
-        det_mode = DetectionMode(mode)
+        det_mode = DetectionMode(mode)  # type: ignore
     except ValueError:
-        raise HTTPException(400, f"mode must be one of: {[m.value for m in DetectionMode]}")
+        valid_modes = ['fast', 'normal', 'conservative', 'full']
+        raise HTTPException(400, f"mode must be one of: {valid_modes}")
     try:
         img_bytes = await fetch_image_bytes(image_url)
     except Exception as e:
         raise HTTPException(400, f"Could not fetch image: {e}")
-    return await _run_pipeline(img_bytes, det_mode)
+    return await _run_pipeline(img_bytes, det_mode)  # type: ignore
 
 
 @app.post("/detect/upload", summary="Detect from file upload", response_model=None)
@@ -755,11 +782,12 @@ async def detect_upload(
         mode: str = Query("normal", description="fast | normal | conservative | full"),
 ):
     try:
-        det_mode = DetectionMode(mode)
+        det_mode = DetectionMode(mode)  # type: ignore
     except ValueError:
-        raise HTTPException(400, f"mode must be one of: {[m.value for m in DetectionMode]}")
+        valid_modes = ['fast', 'normal', 'conservative', 'full']
+        raise HTTPException(400, f"mode must be one of: {valid_modes}")
     img_bytes = await file.read()
-    return await _run_pipeline(img_bytes, det_mode)
+    return await _run_pipeline(img_bytes, det_mode)  # type: ignore
 
 
 @app.get("/health")
@@ -768,6 +796,6 @@ async def health():
         "status": "ok", "version": "3.0.0",
         "models_loaded": _loaded_models,
         "face_detection": FACE_DETECTION_AVAILABLE,
-        "modes": [m.value for m in DetectionMode],
+        "modes": ['fast', 'normal', 'conservative', 'full'],
         "thresholds": {"fake": THRESH_FAKE, "real": THRESH_REAL, "conservative": THRESH_CONSERVATIVE_FAKE},
     }

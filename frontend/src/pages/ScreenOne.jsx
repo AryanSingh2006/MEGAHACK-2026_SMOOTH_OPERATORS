@@ -70,15 +70,21 @@ function ScreenOne({ onUploadImage, onSnipScreen, onClickImage, theme, onToggleT
 
   const handleUrlSubmit = (e) => {
     e.preventDefault();
-    if (urlInput.trim()) {
-      onUrlSubmit(urlInput.trim());
+    const url = urlInput.trim();
+    if (url && (url.startsWith("http://") || url.startsWith("https://"))) {
+      onUrlSubmit(url);
+    } else if (url) {
+      alert("Only valid HTTP/HTTPS URLs are supported.");
     }
   };
 
   const handlePasteSubmit = (e) => {
     e.preventDefault();
-    if (pasteUrl.trim()) {
-      onUrlSubmit(pasteUrl.trim());
+    const url = pasteUrl.trim();
+    if (url && (url.startsWith("http://") || url.startsWith("https://"))) {
+      onUrlSubmit(url);
+    } else if (url) {
+      alert("Only valid HTTP/HTTPS URLs are supported.");
     }
   };
 
@@ -88,7 +94,12 @@ function ScreenOne({ onUploadImage, onSnipScreen, onClickImage, theme, onToggleT
     setIsDragOver(false);
     const text = e.dataTransfer.getData("text/plain") || e.dataTransfer.getData("text/uri-list");
     if (text && text.trim()) {
-      setPasteUrl(text.trim());
+      const url = text.trim();
+      if (url.startsWith("http://") || url.startsWith("https://")) {
+        setPasteUrl(url);
+      } else {
+        alert("Only valid HTTP/HTTPS URLs are supported.");
+      }
     }
   };
 
