@@ -148,6 +148,21 @@ frontend/
 
 ---
 
+## Testing
+
+```bash
+# Frontend (Vitest + React Testing Library)
+npm run test          # single run
+npm run test:watch    # watch mode
+```
+
+Tests cover the API layer (`src/api/index.js`) and UI components (e.g. `ResultCard`). Backend and AI service tests live in sibling folders:
+
+- **Backend** (Spring Boot): `../backend` → `mvn test` (controller + app context)
+- **AI service** (FastAPI): `../ai-service` → `pip install pytest` then `pytest test_main.py -v` (health + detect validation; first run loads models and can take ~1 min)
+
+---
+
 ## Build & Load
 
 ```bash

@@ -1,20 +1,32 @@
 import React, { useState } from "react";
 import Button from "../components/Button.jsx";
 import ImagePreview from "../components/ImagePreview.jsx";
-import { analyzeImageMock } from "../api/index.js";
+import { analyzeImageByUrl } from "../api/index.js";
 import "../styles/layout.css";
 import "../styles/components.css";
 
 function ScreenTwo({ imageSrc, imageUrl, sourceType = "upload", onBack, onAnalyze }) {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [error, setError] = useState(null);
 
   const handleAnalyzeClick = async () => {
     if (!imageSrc) return;
     setIsAnalyzing(true);
+    setError(null);
+
     try {
-      const result = await analyzeImageMock(imageSrc);
-      onAnalyze(result);
-    } finally {
+      // For URL-based methods (paste URL, click image), call the backend
+      if (sourceType === "url" && imageUrl) {
+        const result = await analyzeImageByUrl(imageUrl);
+        onAnalyze(result);
+      } else {
+        // For file uploads / snips — not yet implemented
+        setError("File upload analysis coming soon. Use a URL for now.");
+        setIsAnalyzing(false);
+      }
+    } catch (err) {
+      console.error("Analysis failed:", err);
+      setError(err.message || "Analysis failed. Please try again.");
       setIsAnalyzing(false);
     }
   };
@@ -42,6 +54,7 @@ function ScreenTwo({ imageSrc, imageUrl, sourceType = "upload", onBack, onAnalyz
           <div className="spinner-wrapper">
             <div className="spinner" />
             <span className="spinner-text">Analyzing…</span>
+            <span className="spinner-subtext">Sending to detection service</span>
           </div>
         ) : (
           <>
@@ -73,6 +86,18 @@ function ScreenTwo({ imageSrc, imageUrl, sourceType = "upload", onBack, onAnalyz
                 <div className="image-url-value" title={imageUrl}>
                   {imageUrl}
                 </div>
+              </div>
+            )}
+
+            {/* Error message */}
+            {error && (
+              <div className="analysis-error">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+                <span>{error}</span>
               </div>
             )}
           </>

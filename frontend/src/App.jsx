@@ -5,12 +5,6 @@ import ScreenTwo from "./pages/ScreenTwo.jsx";
 import ScreenThree from "./pages/ScreenThree.jsx";
 import ScreenSnip from "./pages/ScreenSnip.jsx";
 
-const initialAnalysis = {
-  aiPercent: null,
-  realPercent: null,
-  description: "",
-};
-
 function getInitialTheme() {
   try {
     const saved = localStorage.getItem("theme");
@@ -37,7 +31,7 @@ function App() {
   const [imageSrc, setImageSrc] = useState(null);
   const [imageUrl, setImageUrl] = useState(null);
   const [imageSourceType, setImageSourceType] = useState("upload"); // 'upload' | 'url' | 'snip'
-  const [analysisResult, setAnalysisResult] = useState(initialAnalysis);
+  const [analysisResult, setAnalysisResult] = useState(null);
   const [theme, setTheme] = useState(getInitialTheme);
   const [clickImageStatus, setClickImageStatus] = useState(null);
   const [screenshotDataUrl, setScreenshotDataUrl] = useState(null);
@@ -166,7 +160,7 @@ function App() {
     setImageSrc(null);
     setImageUrl(null);
     setImageSourceType("upload");
-    setAnalysisResult(initialAnalysis);
+    setAnalysisResult(null);
     setClickImageStatus(null);
     setScreenshotDataUrl(null);
     setCurrentScreen(1);
