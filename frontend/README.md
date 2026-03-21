@@ -1,204 +1,164 @@
-# Vision Guard — Chrome Extension Frontend
+# Frontend — Vision Guard Chrome Extension
 
-AI-powered deepfake image detection Chrome Extension built with React + Vite, packaged as a Manifest V3 extension.
+> React + Vite popup UI for the Vision Guard deepfake detection browser extension.
+
+---
+
+## What this is
+
+The `frontend/` directory is a **Chrome Extension Manifest V3** popup built with React 19 and Vite 7. It is the user-facing part of Vision Guard — a small popup window that appears when you click the extension icon in the Chrome toolbar. From here, users can select an image and trigger an analysis against the backend.
+
+This is **not** a regular website. After `npm run build`, the compiled output in `dist/` is loaded directly into Chrome as an **unpacked extension**.
 
 ---
 
 ## Tech Stack
 
-| Layer | Technology |
+| Tool | Purpose |
 |---|---|
-| **UI Framework** | React 19 |
-| **Bundler** | Vite 7 |
-| **Styling** | Vanilla CSS (design tokens + CSS variables) |
-| **Fonts** | Google Fonts — Inter, Orbitron |
-| **Extension API** | Chrome Extensions Manifest V3 |
-| **Browser APIs** | `chrome.tabs`, `chrome.scripting`, `chrome.storage`, `chrome.runtime` |
+| **React 19** | Component-based UI |
+| **Vite 7** | Build tool, hot reload in dev |
+| **TailwindCSS 4** | Utility-first CSS via Vite plugin |
+| **Chrome Extension Manifest V3** | Extension platform APIs |
+| **Vitest** + **Testing Library** | Unit tests |
 
 ---
 
-## Project Structure
+## Extension Structure
 
 ```
 frontend/
 ├── public/
-│   ├── manifest.json          # MV3 extension manifest
-│   ├── background.js          # Service worker (message relay + storage)
-│   ├── content-script.js      # Injected into pages for Click Image
-│   ├── icon16/48/128.png      # Extension icons
-│   └── vite.svg
-├── src/
-│   ├── main.jsx               # React entry point
-│   ├── App.jsx                # Root component — state + screen routing
-│   ├── index.css              # Design tokens (dark/light themes)
-│   ├── api/
-│   │   └── index.js           # Backend API layer (mock, to be replaced)
-│   ├── components/
-│   │   ├── Layout.jsx         # Popup shell (card, corner brackets, glow)
-│   │   ├── Button.jsx         # Reusable button (primary/secondary/ghost)
-│   │   ├── ImagePreview.jsx   # Image display with blurred bg effect
-│   │   ├── ResultCard.jsx     # AI/Real probability bars + verdict
-│   │   └── ThemeToggle.jsx    # Dark/Light mode switch
-│   ├── pages/
-│   │   ├── ScreenOne.jsx      # Home — Upload / Snip / Click / Paste URL
-│   │   ├── ScreenTwo.jsx      # Preview + Analyze trigger
-│   │   ├── ScreenThree.jsx    # Result display
-│   │   └── ScreenSnip.jsx     # Full-card snipping UI
-│   └── styles/
-│       ├── global.css          # Reset + box-sizing
-│       ├── layout.css          # Popup card, header, body, footer
-│       └── components.css      # All component-level styles
-├── index.html
-├── vite.config.js
-└── package.json
+│   ├── manifest.json        # Chrome Extension manifest (MV3)
+│   ├── background.js        # Service worker — stores clicked image URLs
+│   ├── content-script.js    # Injected into pages to capture image clicks
+│   └── icon*.png            # Extension icons (16, 48, 128px)
+│
+└── src/
+    ├── main.jsx             # React root mount
+    ├── App.jsx              # Root component — screen router & global state
+    ├── pages/
+    │   ├── ScreenOne.jsx    # Home screen — input method picker
+    │   ├── ScreenTwo.jsx    # Preview & Analyze screen
+    │   ├── ScreenThree.jsx  # Analysis result display
+    │   └── ScreenSnip.jsx   # Screen crop / snip UI
+    ├── components/
+    │   ├── Button.jsx       # Reusable button
+    │   ├── ImagePreview.jsx # Image thumbnail component
+    │   ├── Layout.jsx       # Outer wrapper / shell
+    │   ├── ResultCard.jsx   # Probability verdict card
+    │   └── ThemeToggle.jsx  # Dark / Light toggle
+    ├── api/
+    │   └── index.js         # Backend API client (POST /detect)
+    └── styles/              # CSS modules / layout styles
 ```
 
 ---
 
-## How the Extension Works
-
-### Manifest V3 Architecture
+## Screen Flow
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                    Chrome Browser                        │
-│                                                          │
-│  ┌─────────────┐    ┌──────────────┐   ┌──────────────┐  │
-│  │   Popup      │   │  Background  │   │Content Script│  │
-│  │  (React App) │   │  (Service    │   │ (Injected    │  │
-│  │              │◄──┤   Worker)    │◄──┤  into tab)   │  │
-│  │  index.html  │   │              │   │              │  │
-│  └──────┬───────┘   └──────┬───────┘   └──────┬───────┘  │
-│         │                  │                  │          │
-│    chrome.storage     chrome.runtime      DOM events     │
-│    chrome.tabs        .onMessage          img.src        │
-│    chrome.scripting                                      │
-└──────────────────────────────────────────────────────────┘
+ScreenOne (Home)
+  │
+  ├── Upload Image  ──► FileReader (data URL) ──► ScreenTwo (Preview)
+  ├── Snip Screen   ──► captureVisibleTab ──► ScreenSnip ──► ScreenTwo
+  ├── Click Image   ──► inject content-script → user clicks → popup re-opens ──► ScreenTwo
+  └── Paste URL     ──► ScreenTwo (Preview)
+                               │
+                          POST /detect
+                               │
+                         ScreenThree (Result)
 ```
-
-**Popup** — The React app rendered inside `default_popup`. Fixed at `370×520px`. All UI lives here.
-
-**Background Service Worker** (`background.js`) — Stateless relay. Listens for messages from the content script and persists clicked image URLs to `chrome.storage.local`.
-
-**Content Script** (`content-script.js`) — Injected on-demand via `chrome.scripting.executeScript()`. Adds hover highlights on `<img>` elements, captures the clicked image's `src`, and sends it to the background worker.
 
 ---
 
-## Image Input Methods
+## How Each Input Method Works
 
-### 1. Upload Image
-- User clicks "Upload Image" → hidden `<input type="file" accept="image/*">` is triggered
-- `FileReader.readAsDataURL()` converts the file to a **base64 data URL**
-- State: `imageSrc = "data:image/png;base64,..."`, `imageUrl = null`, `sourceType = "upload"`
+### Upload Image
+- A hidden `<input type="file" accept="image/*">` is triggered on button click.
+- `FileReader.readAsDataURL()` converts the file to a base64 data URL for local preview.
+- **Note:** Only URL-based images are forwarded to the backend; file analysis shows a "coming soon" message.
 
-### 2. Snip Screen
-- User clicks "Snip Screen"
-- **Chrome API**: `chrome.tabs.captureVisibleTab({ format: "png" })` captures the active tab as a data URL
-- User drags a selection rectangle over the screenshot
-- On confirm, an offscreen `<canvas>` crops the selected region using `ctx.drawImage()` with calculated pixel offsets
-- State: `imageSrc = "data:image/png;base64,..."` (cropped), `imageUrl = null`, `sourceType = "snip"`
+### Snip Screen
+- `chrome.tabs.captureVisibleTab({ format: "png" })` takes a screenshot of the active tab.
+- The popup navigates to `ScreenSnip`, where the user draws a selection box over the screenshot.
+- On confirm, the cropped region (data URL) is passed back to the preview screen.
 
-### 3. Click Image (on webpage)
-- User clicks "Click Image" → popup calls `chrome.scripting.executeScript()` to inject `content-script.js` into the active tab → popup closes via `window.close()`
-- Content script adds hover highlighting and listens for clicks on `<img>` elements
-- On click: `chrome.runtime.sendMessage({ type: "IMAGE_CLICKED", url: img.src })` is sent to `background.js`
-- Background stores URL in `chrome.storage.local` under `pendingImage`
-- Next popup open: `useEffect` reads `chrome.storage.local.get("pendingImage")` and loads the URL
-- State: `imageSrc = "https://..."`, `imageUrl = "https://..."`, `sourceType = "url"`
+### Click Image
+- `chrome.scripting.executeScript` injects `content-script.js` into the active tab.
+- The popup immediately closes (`window.close()`).
+- The content script listens for a left-click on any `<img>` element and stores the image `src` URL in `chrome.storage.local` (key: `pendingImage`).
+- Next time the popup opens, `App.jsx`'s mount effect reads `pendingImage`, clears it, and auto-navigates to the preview screen with that URL.
 
-### 4. Paste / Drop URL
-- User pastes or drags a URL into the quick-paste bar on Screen One
-- The raw URL string is used directly
-- State: `imageSrc = "https://..."`, `imageUrl = "https://..."`, `sourceType = "url"`
+### Paste URL
+- A drag-and-drop / paste input bar on `ScreenOne` accepts HTTP/HTTPS URLs.
+- Validates the URL starts with `http://` or `https://` before proceeding.
 
 ---
 
-## Data Sent to Backend
+## API Integration
 
-```
-┌─────────────────┬────────────────────────────┬──────────────┐
-│ Method          │ Data for Backend           │ sourceType   │
-├─────────────────┼────────────────────────────┼──────────────┤
-│ Upload Image    │ Base64 data URL (file)     │ "upload"     │
-│ Snip Screen     │ Base64 data URL (cropped)  │ "snip"       │
-│ Click Image     │ Image URL string           │ "url"        │
-│ Paste URL       │ Image URL string           │ "url"        │
-└─────────────────┴────────────────────────────┴──────────────┘
-```
-
-**Backend integration point**: `src/api/index.js` — currently a mock. Replace `analyzeImageMock()` with real API calls that branch on `sourceType`:
+The popup calls the **Spring Boot backend** at `http://localhost:8080/detect`.
 
 ```js
-// sourceType === "upload" || "snip"  →  POST base64 image data as file
-// sourceType === "url"              →  POST only the URL string
+// src/api/index.js
+const BACKEND_URL = "http://localhost:8080";
+
+POST /detect
+Content-Type: application/json
+Body: { "imageUrl": "https://example.com/photo.jpg" }
+
+Response: { "prediction": "AI Generated", "confidence": "high", "final_score": 0.87 }
+```
+
+To change the backend URL, edit `src/api/index.js`:
+```js
+const BACKEND_URL = "http://localhost:8080";
 ```
 
 ---
 
-## Chrome API Usage
+## Chrome Extension Permissions
 
-| API | Used In | Purpose |
-|---|---|---|
-| `chrome.tabs.captureVisibleTab()` | `App.jsx` | Screenshot of active tab for Snip |
-| `chrome.scripting.executeScript()` | `App.jsx` | Inject content script for Click Image |
-| `chrome.tabs.query()` | `App.jsx` | Get active tab ID |
-| `chrome.runtime.sendMessage()` | `content-script.js`, `App.jsx` | Message passing between contexts |
-| `chrome.runtime.onMessage` | `background.js` | Listen for messages from content script |
-| `chrome.storage.local.set/get/remove` | `background.js`, `App.jsx` | Persist clicked image URL across popup sessions |
+| Permission | Why it's needed |
+|---|---|
+| `activeTab` | Take a screenshot of the current tab (`captureVisibleTab`), inject content script |
+| `scripting` | `executeScript` to inject `content-script.js` into a page |
+| `storage` | Pass the clicked image URL from `content-script.js` to the popup |
 
 ---
 
-## Testing
-
-```bash
-# Frontend (Vitest + React Testing Library)
-npm run test          # single run
-npm run test:watch    # watch mode
-```
-
-Tests cover the API layer (`src/api/index.js`) and UI components (e.g. `ResultCard`). Backend and AI service tests live in sibling folders:
-
-- **Backend** (Spring Boot): `../backend` → `mvn test` (controller + app context)
-- **AI service** (FastAPI): `../ai-service` → `pip install pytest` then `pytest test_main.py -v` (health + detect validation; first run loads models and can take ~1 min)
-
----
-
-## Build & Load
+## Dev Setup
 
 ```bash
 # Install dependencies
-cd frontend
 npm install
 
-# Development
+# Run dev server (not the extension — useful for component work)
 npm run dev
 
-# Production build
+# Build the extension bundle
 npm run build
+
+# Run unit tests
+npm test
 ```
 
-**Load into Chrome:**
-1. Navigate to `chrome://extensions/`
-2. Enable **Developer mode**
-3. Click **Load unpacked** → select the `frontend/dist/` folder
-4. The Vision Guard icon appears in the toolbar
+### Load as Unpacked Extension in Chrome
+
+1. Run `npm run build`
+2. Open `chrome://extensions`
+3. Enable **Developer mode** (top right)
+4. Click **Load unpacked** → select the `frontend/dist/` folder
+5. The Vision Guard icon will appear in the Chrome toolbar
 
 ---
 
-## Theming
+## Unit Tests
 
-Two themes controlled via `data-theme` attribute on `<html>`:
-- **Dark** (default) — Sci-fi HUD aesthetic with cyan accents
-- **Light** — Clean, professional with teal accents
+Tests are in `src/**/*.test.jsx` and `src/**/*.test.js`, run with **Vitest** + **@testing-library/react**.
 
-Theme preference is persisted in `localStorage`. All colors are defined as CSS custom properties in `index.css`.
-
----
-
-## Required Permissions
-
-| Permission | Reason |
-|---|---|
-| `activeTab` | Access the current tab for screenshot capture and script injection |
-| `scripting` | Inject `content-script.js` into pages for Click Image |
-| `storage` | Persist clicked image URLs across popup open/close cycles |
+```bash
+npm test          # run once
+npm run test:watch  # watch mode
+```
